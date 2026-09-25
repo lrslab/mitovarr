@@ -1,0 +1,260 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="183mm" height="205mm" preserveAspectRatio="xMinYMin meet" viewBox="0 0 518.740157 581.102362" version="1.0" fill-rule="evenodd">
+	<title>Figure 1. Native mitochondrial assembly and NCR interpretation with mitovarr</title><desc>Four schematic panels: input contracts; native de novo assembly; reference-guided local assembly; independent gene annotation, tRNA-Pro rotation and NCR analysis. No experimental measurements are depicted.</desc><title>...</title>
+	<desc>...</desc>
+	<clipPath id="clip">
+		<rect x="0" y="0" width="518.740157480315" height="581.1023622047245" />
+	</clipPath>
+	<g id="group" transform="scale(1,-1) translate(0,-581.102362)" style="clip-path: url(#clip)">
+		<g transform="">
+			<rect x="0" y="0" width="518.740157480315" height="581.1023622047245" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(100%,100%,100%); fill-rule: evenodd;" />
+			<g transform="" id="panel_a" inkscape:groupmode="layer" inkscape:label="a - workflow">
+				<text x="11.338582677165356" y="567.1264826073956" style="font-family: Arial-Bold; font-size: 8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1134) scale(1,-1)">a</text>
+				<text x="25.51181102362205" y="567.1264826073956" style="font-family: Arial-Bold; font-size: 7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1134) scale(1,-1)">Input routes and read-evidence scope</text>
+				<rect x="14.173228346456694" y="475.67028804943686" width="99.21259842519686" height="80.91298714242998" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(96%,96%,96%); fill-rule: evenodd;" />
+				<rect x="124.7244094488189" y="475.67028804943686" width="99.21259842519686" height="80.91298714242998" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(96%,96%,96%); fill-rule: evenodd;" />
+				<rect x="235.27559055118112" y="475.67028804943686" width="99.21259842519683" height="80.91298714242998" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(96%,96%,96%); fill-rule: evenodd;" />
+				<rect x="360.00000000000006" y="475.67028804943686" width="144.5669291338583" height="80.91298714242998" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(96%,96%,96%); fill-rule: evenodd;" />
+				<text x="45.16968869186762" y="543.833349945181" style="font-family: Arial-Bold; font-size: 6.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1087) scale(1,-1)">BAM-baited</text>
+				<text x="33.46219357468012" y="532.0641881790093" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1064) scale(1,-1)">CaenDR mtDNA BAM</text>
+				<text x="29.269713105930123" y="522.0113625037377" style="font-family: Arial; font-size: 5.9px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1044) scale(1,-1)">MT query + mate recovery</text>
+				<path d="M 63.779528,518.823881 L 63.779528,509.751819 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.65;" />
+				<polygon points="63.77953 509.7518, 65.14866 512.5715, 62.41039 512.5715" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
+				<text x="33.49000119186763" y="501.4153294129374" style="font-family: Arial-Bold; font-size: 6.3px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1002) scale(1,-1)">Extracted read pairs</text>
+				<text x="32.66824826218013" y="484.98754111432277" style="font-family: Arial; font-size: 5.8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,969) scale(1,-1)">Validate: extracted pairs</text>
+				<text x="149.01432682547983" y="543.833349945181" style="font-family: Arial-Bold; font-size: 6.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1087) scale(1,-1)">Reference-blind</text>
+				<text x="142.97499577079233" y="532.0641881790093" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1064) scale(1,-1)">Original paired FASTQ</text>
+				<path d="M 148.818898,522.992126 L 199.84252,522.992126 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.35;" />
+				<path d="M 148.818898,522.992126 L 160.15748,522.992126 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.9;" />
+				<polygon points="160.1575 522.9921, 157.6063 523.9189, 157.6063 522.0653" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
+				<path d="M 199.84252,522.992126 L 188.503937,522.992126 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.9;" />
+				<polygon points="188.5039 522.9921, 191.0551 522.0653, 191.0551 523.9189" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
+				<path d="M 174.330709,518.823881 L 174.330709,509.751819 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.65;" />
+				<polygon points="174.3307 509.7518, 175.6998 512.5715, 172.9616 512.5715" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
+				<text x="149.65058170829232" y="501.4153294129374" style="font-family: Arial-Bold; font-size: 6.3px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1002) scale(1,-1)">All original pairs</text>
+				<text x="142.09086491141733" y="484.98754111432277" style="font-family: Arial; font-size: 5.8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,969) scale(1,-1)">Validate: all original pairs</text>
+				<text x="272.96550792784205" y="543.833349945181" style="font-family: Arial-Bold; font-size: 6.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1087) scale(1,-1)">Seeded</text>
+				<text x="252.05942882627954" y="532.0641881790093" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1064) scale(1,-1)">Original pairs + mt seed</text>
+				<text x="253.07576183409205" y="522.0113625037377" style="font-family: Arial; font-size: 5.9px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1044) scale(1,-1)">Iterative pair recruitment</text>
+				<path d="M 284.88189,518.823881 L 284.88189,509.751819 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.65;" />
+				<polygon points="284.8819 509.7518, 286.251 512.5715, 283.5128 512.5715" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
+				<text x="254.42009777159205" y="501.4153294129374" style="font-family: Arial-Bold; font-size: 6.3px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1002) scale(1,-1)">Recruited read pairs</text>
+				<text x="252.64204601377955" y="484.98754111432277" style="font-family: Arial; font-size: 5.8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,969) scale(1,-1)">Validate: all original pairs</text>
+				<text x="402.31176046536666" y="543.833349945181" style="font-family: Arial-Bold; font-size: 6.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1087) scale(1,-1)">Mapping assembly</text>
+				<text x="394.8957692544292" y="532.0641881790093" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1064) scale(1,-1)">Matching reference FASTA</text>
+				<text x="400.8354176919292" y="522.0113625037377" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1044) scale(1,-1)">+ sorted, indexed BAM</text>
+				<path d="M 382.677165,497.737466 L 481.889764,497.737466 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 1;" />
+				<path d="M 388.346457,512.448919 L 428.031496,512.448919 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.35;" />
+				<path d="M 388.346457,512.448919 L 399.968504,512.448919 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<polygon points="399.9685 512.4489, 397.4173 513.3757, 397.4173 511.5221" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<path d="M 428.031496,512.448919 L 416.409449,512.448919 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<polygon points="416.4094 512.4489, 418.9606 511.5221, 418.9606 513.3757" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<path d="M 413.858268,506.809529 L 453.543307,506.809529 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.35;" />
+				<path d="M 413.858268,506.809529 L 425.480315,506.809529 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<polygon points="425.4803 506.8095, 422.9291 507.7364, 422.9291 505.8827" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<path d="M 453.543307,506.809529 L 441.92126,506.809529 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<polygon points="441.9213 506.8095, 444.4724 505.8827, 444.4724 507.7364" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<path d="M 436.535433,501.415329 L 476.220472,501.415329 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.35;" />
+				<path d="M 436.535433,501.415329 L 448.15748,501.415329 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<polygon points="448.1575 501.4153, 445.6063 502.3422, 445.6063 500.4885" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<path d="M 476.220472,501.415329 L 464.598425,501.415329 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<polygon points="464.5984 501.4153, 467.1496 500.4885, 467.1496 502.3422" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<text x="393.4435719888042" y="484.98754111432277" style="font-family: Arial; font-size: 5.8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,969) scale(1,-1)">CaenDR mt.bam or local BAM</text>
+				<path d="M 63.779528,475.670288 L 63.779528,468.804944 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.6;" />
+				<path d="M 174.330709,475.670288 L 174.330709,468.804944 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.6;" />
+				<path d="M 284.88189,475.670288 L 284.88189,468.804944 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.6;" />
+				<path d="M 63.779528,468.804944 L 284.88189,468.804944 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.6;" />
+				<text x="104.48749577079234" y="459.24249975082233" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,918) scale(1,-1)">Sample FASTQ only; no reference in the assembler</text>
+				<path d="M 130.393701,456.5454 L 130.393701,449.680056 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.65;" />
+				<polygon points="130.3937 449.6801, 131.7628 452.4998, 129.0246 452.4998" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
+				<path d="M 432.283465,475.670288 L 432.283465,449.680056 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.65;" />
+				<polygon points="432.2835 449.6801, 433.6526 452.4998, 430.9143 452.4998" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+			</g>
+			<g transform="" id="panel_b" inkscape:groupmode="layer" inkscape:label="b - workflow">
+				<text x="11.338582677165356" y="441.3435662314363" style="font-family: Arial-Bold; font-size: 8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,882) scale(1,-1)">b</text>
+				<text x="25.51181102362205" y="441.3435662314363" style="font-family: Arial-Bold; font-size: 7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,882) scale(1,-1)">Sample-graph de novo assembly</text>
+				<path d="M 14.173228,433.007077 L 246.614173,433.007077 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 1.4;" />
+				<text x="14.173228346456694" y="416.82447921857874" style="font-family: Arial-Bold; font-size: 6.5px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,833) scale(1,-1)">Build, simplify and compact the sample graph</text>
+				<path d="M 25.511811,387.401575 L 45.354331,387.401575 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<path d="M 45.354331,387.401575 L 65.19685,399.661118 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<path d="M 45.354331,387.401575 L 65.19685,375.142031 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<path d="M 65.19685,399.661118 L 87.874016,399.661118 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<path d="M 65.19685,375.142031 L 87.874016,375.142031 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<path d="M 87.874016,399.661118 L 107.716535,387.401575 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<path d="M 87.874016,375.142031 L 107.716535,387.401575 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<path d="M 107.716535,387.401575 L 127.559055,387.401575 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<path d="M 45.354331,387.401575 L 45.354331,407.016844 Z" style="stroke: rgb(86%,88%,89%); stroke-linecap: butt; stroke-width: 0.8;" />
+				<circle cx="25.51181102362205" cy="387.4015748031497" r="2.409448818897638" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;" />
+				<circle cx="45.35433070866142" cy="387.4015748031497" r="2.409448818897638" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;" />
+				<circle cx="65.1968503937008" cy="399.66111830957846" r="2.409448818897638" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;" />
+				<circle cx="65.1968503937008" cy="375.14203129672086" r="2.409448818897638" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;" />
+				<circle cx="87.87401574803151" cy="399.66111830957846" r="2.409448818897638" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;" />
+				<circle cx="87.87401574803151" cy="375.14203129672086" r="2.409448818897638" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;" />
+				<circle cx="107.71653543307087" cy="387.4015748031497" r="2.409448818897638" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;" />
+				<circle cx="127.55905511811025" cy="387.4015748031497" r="2.409448818897638" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.75; fill: rgb(100%,100%,100%); fill-rule: evenodd;" />
+				<circle cx="45.35433070866142" cy="407.0168444134357" r="2.2677165354330713" style="stroke: rgb(86%,88%,89%); stroke-linecap: butt; stroke-width: 0.6; fill: rgb(100%,100%,100%); fill-rule: evenodd;" />
+				<path d="M 136.062992,387.401575 L 155.905512,387.401575 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.65;" />
+				<polygon points="155.9055 387.4016, 152.6457 388.5858, 152.6457 386.2173" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(48%,51%,54%); fill-rule: evenodd;" />
+				<path d="M 178.582677,387.401575 L 192.755906,398.435164 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.7;" />
+				<path d="M 209.76378,398.435164 L 223.937008,387.401575 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.7;" />
+				<path d="M 178.582677,387.401575 L 192.755906,376.367986 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.7;" />
+				<path d="M 209.76378,376.367986 L 223.937008,387.401575 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.7;" />
+				<rect x="161.5748031496063" y="383.2333300109638" width="17.00787401574803" height="8.336489584371577" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(91%,95%,97%); fill-rule: evenodd;" />
+				<rect x="192.75590551181105" y="394.2669191667498" width="17.00787401574803" height="8.336489584371577" style="stroke: rgb(80%,47%,65%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(95%,89%,93%); fill-rule: evenodd;" />
+				<text x="199.09333861343507" y="396.59623243297125" style="font-family: Arial; font-size: 6px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,793) scale(1,-1)">R</text>
+				<rect x="192.75590551181105" y="372.199740855178" width="17.00787401574803" height="8.336489584371577" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(91%,95%,97%); fill-rule: evenodd;" />
+				<rect x="223.93700787401576" y="383.2333300109638" width="17.00787401574803" height="8.336489584371577" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(91%,95%,97%); fill-rule: evenodd;" />
+				<text x="42.56591297059548" y="360.43057908900636" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,720) scale(1,-1)">Local error-path pruning</text>
+				<text x="191.93708861343507" y="360.43057908900636" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,720) scale(1,-1)">Unitigs</text>
+				<path d="M 130.393701,355.526762 L 130.393701,343.267218 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.65;" />
+				<polygon points="130.3937 343.2672, 131.7628 346.0869, 129.0246 346.0869" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
+				<text x="14.173228346456694" y="331.00767467357724" style="font-family: Arial-Bold; font-size: 6.5px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,662) scale(1,-1)">Thread reads and propose complete paths</text>
+				<text x="22.67716535433071" y="307.22416027110535" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,614) scale(1,-1)">P1</text>
+				<path d="M 51.023622,309.185687 L 238.110236,309.185687 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.6;" />
+				<rect x="51.0236220472441" y="305.0174424399482" width="42.51968503937009" height="8.336489584371577" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(91%,95%,97%); fill-rule: evenodd;" />
+				<rect x="195.59055118110237" y="305.0174424399482" width="42.519685039370074" height="8.336489584371577" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(91%,95%,97%); fill-rule: evenodd;" />
+				<rect x="128.9763779527559" y="305.0174424399482" width="28.346456692913392" height="8.336489584371577" style="stroke: rgb(80%,47%,65%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(95%,89%,93%); fill-rule: evenodd;" />
+				<text x="140.98310239296262" y="307.3467557061697" style="font-family: Arial; font-size: 6px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,614) scale(1,-1)">R</text>
+				<text x="22.67716535433071" y="277.31087411541915" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,554) scale(1,-1)">P2</text>
+				<path d="M 51.023622,279.272401 L 238.110236,279.272401 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.6;" />
+				<rect x="51.0236220472441" y="275.10415628426193" width="42.51968503937009" height="8.336489584371577" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(91%,95%,97%); fill-rule: evenodd;" />
+				<rect x="195.59055118110237" y="275.10415628426193" width="42.519685039370074" height="8.336489584371577" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(91%,95%,97%); fill-rule: evenodd;" />
+				<rect x="110.55118110236222" y="275.10415628426193" width="28.346456692913392" height="8.336489584371577" style="stroke: rgb(80%,47%,65%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(95%,89%,93%); fill-rule: evenodd;" />
+				<text x="122.5579055425689" y="277.43346955048344" style="font-family: Arial; font-size: 6px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,554) scale(1,-1)">R</text>
+				<rect x="147.40157480314963" y="275.10415628426193" width="28.346456692913392" height="8.336489584371577" style="stroke: rgb(80%,47%,65%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(95%,89%,93%); fill-rule: evenodd;" />
+				<text x="159.4082992433563" y="277.43346955048344" style="font-family: Arial; font-size: 6px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,554) scale(1,-1)">R</text>
+				<path d="M 73.700787,296.190571 L 215.433071,296.190571 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.35;" />
+				<path d="M 73.700787,296.190571 L 99.212598,296.190571 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.9;" />
+				<polygon points="99.2126 296.1906, 96.66142 297.1174, 96.66142 295.2637" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
+				<path d="M 215.433071,296.190571 L 189.92126,296.190571 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.9;" />
+				<polygon points="189.9213 296.1906, 192.4724 295.2637, 192.4724 297.1174" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
+				<text x="14.173228346456694" y="255.97926841423308" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,511) scale(1,-1)">Read threading + smaller-k end connections</text>
+				<text x="14.173228346456694" y="246.4168244792186" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,492) scale(1,-1)">Bounded repeat-copy and circular-path hypotheses</text>
+				<rect x="14.173228346456694" y="196.15269610286055" width="232.44094488188978" height="41.682447921857886" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(91%,95%,97%); fill-rule: evenodd;" />
+				<text x="69.8957759827141" y="225.33040964816112" style="font-family: Arial-Bold; font-size: 6.5px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,450) scale(1,-1)">Compare paths using paired fragments</text>
+				<text x="67.07492637333911" y="213.31605701186086" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,426) scale(1,-1)">Gapped alignments + empirical mate geometry</text>
+				<text x="62.174950787401585" y="203.2632313365893" style="font-family: Arial; font-size: 5.9px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,406) scale(1,-1)">Shared read cohort; each fragment contributes once</text>
+				<text x="82.1547115295891" y="183.8931525964318" style="font-family: Arial-Bold; font-size: 6.3px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,367) scale(1,-1)">Primary sequence + alternatives</text>
+				<text x="64.3053462952141" y="174.08551779128877" style="font-family: Arial; font-size: 5.9px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,348) scale(1,-1)">Final: resolved path, coverage and supported joins</text>
+			</g>
+			<g transform="" id="panel_c" inkscape:groupmode="layer" inkscape:label="c - workflow">
+				<text x="269.2913385826772" y="441.3435662314363" style="font-family: Arial-Bold; font-size: 8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,882) scale(1,-1)">c</text>
+				<text x="283.46456692913387" y="441.3435662314363" style="font-family: Arial-Bold; font-size: 7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,882) scale(1,-1)">Reference-guided mapping assembly</text>
+				<path d="M 272.125984,433.007077 L 504.566929,433.007077 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 1.4;" />
+				<text x="272.12598425196853" y="416.82447921857874" style="font-family: Arial-Bold; font-size: 6.5px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,833) scale(1,-1)">Call a fragment-aware pileup consensus</text>
+				<path d="M 289.133858,404.564936 L 385.511811,404.564936 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.35;" />
+				<path d="M 289.133858,404.564936 L 312.661417,404.564936 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.9;" />
+				<polygon points="312.6614 404.5649, 310.1102 405.4918, 310.1102 403.6381" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<path d="M 385.511811,404.564936 L 361.984252,404.564936 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.9;" />
+				<polygon points="361.9843 404.5649, 364.5354 403.6381, 364.5354 405.4918" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<path d="M 323.149606,396.718828 L 433.700787,396.718828 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.35;" />
+				<path d="M 323.149606,396.718828 L 346.677165,396.718828 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.9;" />
+				<polygon points="346.6772 396.7188, 344.126 397.6456, 344.126 395.792" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<path d="M 433.700787,396.718828 L 410.173228,396.718828 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.9;" />
+				<polygon points="410.1732 396.7188, 412.7244 395.792, 412.7244 397.6456" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<path d="M 365.669291,388.87272 L 481.889764,388.87272 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.35;" />
+				<path d="M 365.669291,388.87272 L 389.19685,388.87272 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.9;" />
+				<polygon points="389.1969 388.8727, 386.6457 389.7995, 386.6457 387.9459" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<path d="M 481.889764,388.87272 L 458.362205,388.87272 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.9;" />
+				<polygon points="458.3622 388.8727, 460.9134 387.9459, 460.9134 389.7995" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<rect x="405.35433070866145" y="393.53134655636404" width="3.1181102362204456" height="6.374962623342981" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<rect x="405.35433070866145" y="385.68523871224966" width="3.1181102362204456" height="6.374962623342981" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<path d="M 286.299213,374.65165 L 490.393701,374.65165 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 1.6;" />
+				<rect x="403.93700787401576" y="370.7285956344065" width="5.6692913385826955" height="7.846107844114442" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.5; fill: rgb(98%,94%,91%); fill-rule: evenodd;" />
+				<text x="320.7321988804134" y="360.43057908900636" style="font-family: Arial; font-size: 6px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,720) scale(1,-1)">Quality-weighted SNP / indel calls; low support = N</text>
+				<path d="M 388.346457,355.526762 L 388.346457,343.267218 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.65;" />
+				<polygon points="388.3465 343.2672, 389.7156 346.0869, 386.9773 346.0869" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<path d="M 388.346457,351.848899 L 513.070866,351.848899 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.45;" />
+				<path d="M 513.070866,351.848899 L 513.070866,191.248879 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.45;" />
+				<path d="M 513.070866,191.248879 L 388.346457,191.248879 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.45;" />
+				<polygon points="388.3465 191.2489, 390.6142 190.425, 390.6142 192.0727" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(48%,51%,54%); fill-rule: evenodd;" />
+				<text x="448.1047880398007" y="344.4931725306489" style="font-family: Arial; font-size: 5.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,688) scale(1,-1)">Pileup only</text>
+				<rect x="272.12598425196853" y="193.70078740157484" width="232.44094488188978" height="147.11452207714544" style="stroke: rgb(76%,78%,80%); stroke-linecap: butt; stroke-width: 0.6; fill: none; fill-rule: evenodd; stroke-dasharray: 2, 2;" />
+				<text x="318.6850064976009" y="331.00767467357724" style="font-family: Arial-Bold; font-size: 6.3px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,662) scale(1,-1)">Optional local assembly with matching FASTQ</text>
+				<text x="330.36369302103844" y="317.276985946377" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,634) scale(1,-1)">Detect clips, indels and ambiguous regions</text>
+				<text x="280.62992125984255" y="297.9069072062195" style="font-family: Arial; font-size: 5.8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,595) scale(1,-1)">Backbone</text>
+				<path d="M 337.322835,299.868434 L 493.228346,299.868434 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.55;" />
+				<rect x="337.32283464566933" y="295.45499850493377" width="28.346456692913364" height="8.336489584371577" style="stroke: none; stroke-linecap: butt; stroke-width: 0.45; fill: rgb(86%,88%,89%); fill-rule: evenodd;" />
+				<rect x="464.88188976377955" y="295.45499850493377" width="28.346456692913364" height="8.336489584371577" style="stroke: none; stroke-linecap: butt; stroke-width: 0.45; fill: rgb(86%,88%,89%); fill-rule: evenodd;" />
+				<text x="280.62992125984255" y="272.6522475829762" style="font-family: Arial; font-size: 5.8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,545) scale(1,-1)">Sample path</text>
+				<path d="M 337.322835,274.613775 L 493.228346,274.613775 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.55;" />
+				<rect x="337.32283464566933" y="270.2003388816904" width="28.346456692913364" height="8.336489584371577" style="stroke: none; stroke-linecap: butt; stroke-width: 0.45; fill: rgb(86%,88%,89%); fill-rule: evenodd;" />
+				<rect x="464.88188976377955" y="270.2003388816904" width="28.346456692913364" height="8.336489584371577" style="stroke: none; stroke-linecap: butt; stroke-width: 0.45; fill: rgb(86%,88%,89%); fill-rule: evenodd;" />
+				<rect x="401.6692913385827" y="294.71942589454807" width="27.21259842519686" height="9.807634805143039" style="stroke: none; stroke-linecap: butt; stroke-width: 0.45; fill: rgb(100%,100%,100%); fill-rule: evenodd;" />
+				<path d="M 402.519685,299.623243 L 428.031496,299.623243 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.6; stroke-dasharray: 1.5, 1.5;" />
+				<rect x="382.6771653543307" y="270.2003388816904" width="65.1968503937008" height="8.336489584371577" style="stroke: rgb(80%,47%,65%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(95%,89%,93%); fill-rule: evenodd;" />
+				<text x="408.77607883243115" y="272.5296521479119" style="font-family: Arial; font-size: 6px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,545) scale(1,-1)">NCR</text>
+				<path d="M 365.669291,307.714542 L 365.669291,264.80614 Z" style="stroke: rgb(76%,78%,80%); stroke-linecap: butt; stroke-width: 0.4; stroke-dasharray: 1.5, 1.5;" />
+				<path d="M 464.88189,307.714542 L 464.88189,264.80614 Z" style="stroke: rgb(76%,78%,80%); stroke-linecap: butt; stroke-width: 0.4; stroke-dasharray: 1.5, 1.5;" />
+				<text x="330.8670621616634" y="255.97926841423308" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,511) scale(1,-1)">Local sample paths between unique flanks</text>
+				<text x="323.9211637241634" y="246.4168244792186" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,492) scale(1,-1)">Retain homologous copies in whole-contig tests</text>
+				<rect x="277.7952755905512" y="196.15269610286055" width="221.10236220472444" height="41.682447921857886" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(98%,94%,91%); fill-rule: evenodd;" />
+				<text x="334.7198697788509" y="225.33040964816112" style="font-family: Arial-Bold; font-size: 6.5px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,450) scale(1,-1)">Compare paths and both junctions</text>
+				<text x="332.73905923197594" y="213.31605701186086" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,426) scale(1,-1)">Same paired fragments for all candidates</text>
+				<text x="324.8825650913509" y="203.2632313365893" style="font-family: Arial; font-size: 5.9px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,406) scale(1,-1)">Patch supported sequence; preserve uncertainty</text>
+				<text x="309.1015592319759" y="183.8931525964318" style="font-family: Arial-Bold; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,367) scale(1,-1)">Backbone + accepted patches / unresolved candidates</text>
+				<text x="328.6636930210384" y="174.08551779128877" style="font-family: Arial; font-size: 5.9px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,348) scale(1,-1)">Mapping completion does not verify circularity</text>
+			</g>
+			<g transform="" id="panel_d" inkscape:groupmode="layer" inkscape:label="d - workflow">
+				<text x="11.338582677165356" y="152.01833947971696" style="font-family: Arial-Bold; font-size: 8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,304) scale(1,-1)">d</text>
+				<text x="25.51181102362205" y="152.01833947971696" style="font-family: Arial-Bold; font-size: 7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,304) scale(1,-1)">Post-assembly annotation</text>
+				<text x="390.97527874323333" y="152.01833947971696" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,304) scale(1,-1)">Species homology models enter only here</text>
+				<path d="M 130.393701,170.407655 L 130.393701,164.277883 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.55;" />
+				<path d="M 388.346457,170.407655 L 388.346457,164.277883 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.55;" />
+				<path d="M 130.393701,164.277883 L 388.346457,164.277883 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.55;" />
+				<path d="M 259.370079,164.277883 L 259.370079,142.210705 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.65;" />
+				<polygon points="259.3701 142.2107, 260.7392 145.0304, 258.0009 145.0304" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(48%,51%,54%); fill-rule: evenodd;" />
+				<rect x="14.173228346456694" y="116.95604505133058" width="490.3937007874016" height="25.254659623243313" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(96%,96%,96%); fill-rule: evenodd;" />
+				<text x="173.9433209276575" y="132.15787899930237" style="font-family: Arial-Bold; font-size: 6.5px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,264) scale(1,-1)">Frozen FASTA + selection status + assembly ambiguity</text>
+				<text x="210.8398053026575" y="122.10505332403072" style="font-family: Arial; font-size: 6px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,244) scale(1,-1)">No annotation feedback to assembly</text>
+				<path d="M 87.874016,116.956045 L 87.874016,107.883983 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.5;" />
+				<polygon points="87.87402 107.884, 88.94551 110.0907, 86.80252 110.0907" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(48%,51%,54%); fill-rule: evenodd;" />
+				<text x="14.173228346456694" y="98.07634805143032" style="font-family: Arial-Bold; font-size: 6.4px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,196) scale(1,-1)">Homology-based gene annotation</text>
+				<text x="187.08661417322836" y="98.07634805143032" style="font-family: Arial-Bold; font-size: 6.4px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,196) scale(1,-1)">Optional tRNA-Pro rotation</text>
+				<text x="360.00000000000006" y="98.07634805143032" style="font-family: Arial-Bold; font-size: 6.4px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,196) scale(1,-1)">Positional NCR1-4 annotation</text>
+				<path d="M 19.84252,79.687033 L 155.905512,79.687033 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.5;" />
+				<rect x="19.84251968503937" y="75.02840625934418" width="48.18897637795276" height="9.317253064885875" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(91%,95%,97%); fill-rule: evenodd;" />
+				<text x="37.603023499015755" y="77.84810126582279" style="font-family: Arial; font-size: 6px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,155) scale(1,-1)">CDS</text>
+				<rect x="76.53543307086615" y="75.02840625934418" width="25.51181102362206" height="9.317253064885875" style="stroke: rgb(0%,61%,45%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(88%,95%,92%); fill-rule: evenodd;" />
+				<text x="82.12385811392717" y="77.84810126582279" style="font-family: Arial; font-size: 6px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,155) scale(1,-1)">tRNA</text>
+				<rect x="110.55118110236222" y="75.02840625934418" width="45.35433070866142" height="9.317253064885875" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(98%,94%,91%); fill-rule: evenodd;" />
+				<text x="125.89533864419292" y="77.84810126582279" style="font-family: Arial; font-size: 6px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,155) scale(1,-1)">rRNA</text>
+				<text x="14.173228346456694" y="58.8458088308582" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,117) scale(1,-1)">12 CDS / 22 tRNA / 2 rRNA models</text>
+				<text x="14.173228346456694" y="49.03817402571516" style="font-family: Arial; font-size: 5.9px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,98) scale(1,-1)">Boundary + coding checks; retain partials</text>
+				<path d="M 236.692913 78.461078 C 236.692913 75.078002 235.348991 71.833487 232.956795 69.441291 C 230.564599 67.049095 227.320084 65.705173 223.937008 65.705173 C 220.553931 65.705173 217.309417 67.049095 214.917221 69.441291 C 212.525024 71.833487 211.181102 75.078002 211.181102 78.461078 C 211.181102 81.844155 212.525024 85.088669 214.917221 87.480866 C 217.309417 89.873062 220.553931 91.216984 223.937008 91.216984 C 227.320084 91.216984 230.564599 89.873062 232.956795 87.480866 C 235.348991 85.088669 236.692913 81.844155 236.692913 78.461078 " style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.85; fill: none; fill-rule: evenodd;" />
+				<path d="M 236.258266 81.76255 C 236.896521 79.380553 236.830638 76.864615 236.068595 74.519287 " style="stroke: rgb(0%,61%,45%); stroke-linecap: butt; stroke-width: 2.6; fill: none; fill-rule: evenodd;" />
+				<path d="M 318.897638 78.461078 C 318.897638 75.078002 317.553716 71.833487 315.16152 69.441291 C 312.769323 67.049095 309.524809 65.705173 306.141732 65.705173 C 302.758656 65.705173 299.514141 67.049095 297.121945 69.441291 C 294.729749 71.833487 293.385827 75.078002 293.385827 78.461078 C 293.385827 81.844155 294.729749 85.088669 297.121945 87.480866 C 299.514141 89.873062 302.758656 91.216984 306.141732 91.216984 C 309.524809 91.216984 312.769323 89.873062 315.16152 87.480866 C 317.553716 85.088669 318.897638 81.844155 318.897638 78.461078 " style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.85; fill: none; fill-rule: evenodd;" />
+				<path d="M 306.141732 91.216984 C 308.607757 91.216984 311.020914 90.502174 313.089096 89.159081 " style="stroke: rgb(0%,61%,45%); stroke-linecap: butt; stroke-width: 2.6; fill: none; fill-rule: evenodd;" />
+				<path d="M 252.283465,78.461078 L 277.795276,78.461078 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.65;" />
+				<polygon points="277.7953 78.46108, 274.5354 79.64535, 274.5354 77.27681" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(48%,51%,54%); fill-rule: evenodd;" />
+				<text x="314.6456692913386" y="90.72062194757305" style="font-family: Arial; font-size: 5.8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,181) scale(1,-1)">1</text>
+				<text x="216.06841858390752" y="58.8458088308582" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,117) scale(1,-1)">5' tRNA-Pro becomes position 1</text>
+				<text x="212.47400940422" y="49.03817402571516" style="font-family: Arial; font-size: 5.9px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,98) scale(1,-1)">Circular input; unique, complete Pro</text>
+				<path d="M 362.834646,79.687033 L 501.732283,79.687033 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.5;" />
+				<rect x="362.8346456692914" y="75.02840625934418" width="28.346456692913364" height="9.317253064885875" style="stroke: none; stroke-linecap: butt; stroke-width: 0.45; fill: rgb(86%,88%,89%); fill-rule: evenodd;" />
+				<text x="369.6690068282481" y="77.84810126582279" style="font-family: Arial; font-size: 6px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,155) scale(1,-1)">Gene</text>
+				<rect x="399.68503937007875" y="75.02840625934418" width="62.36220472440942" height="9.317253064885875" style="stroke: rgb(80%,47%,65%); stroke-linecap: butt; stroke-width: 0.45; fill: rgb(95%,89%,93%); fill-rule: evenodd;" />
+				<text x="424.3666300135335" y="77.84810126582279" style="font-family: Arial; font-size: 6px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,155) scale(1,-1)">NCR</text>
+				<rect x="473.38582677165357" y="75.02840625934418" width="28.346456692913364" height="9.317253064885875" style="stroke: none; stroke-linecap: butt; stroke-width: 0.45; fill: rgb(86%,88%,89%); fill-rule: evenodd;" />
+				<text x="480.2201879306103" y="77.84810126582279" style="font-family: Arial; font-size: 6px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,155) scale(1,-1)">Gene</text>
+				<text x="360.00000000000006" y="58.8458088308582" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,117) scale(1,-1)">Intervals from observed gene flanks</text>
+				<text x="360.00000000000006" y="49.03817402571516" style="font-family: Arial; font-size: 5.9px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,98) scale(1,-1)">Sequence + boundaries + path evidence</text>
+				<path d="M 164.409449,79.687033 L 178.582677,79.687033 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.55;" />
+				<polygon points="178.5827 79.68703, 175.8898 80.66534, 175.8898 78.70872" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(48%,51%,54%); fill-rule: evenodd;" />
+				<path d="M 340.15748,79.687033 L 354.330709,79.687033 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.55;" />
+				<polygon points="354.3307 79.68703, 351.6378 80.66534, 351.6378 78.70872" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(48%,51%,54%); fill-rule: evenodd;" />
+				<path d="M 14.173228,36.778631 L 504.566929,36.778631 Z" style="stroke: rgb(76%,78%,80%); stroke-linecap: butt; stroke-width: 0.5;" />
+				<text x="14.173228346456694" y="24.51908701285758" style="font-family: Arial-Bold; font-size: 6.4px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,49) scale(1,-1)">Reusable outputs</text>
+				<text x="113.38582677165356" y="24.51908701285758" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,49) scale(1,-1)">Sequences (FASTA)  |  Graphs (GFA)  |  Features (GFF3)  |  Evidence (TSV / JSON)</text>
+				<rect x="14.173228346456694" y="9.562443935014462" width="8.503937007874017" height="3.677863051928636" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
+				<text x="26.92913385826772" y="9.562443935014462" style="font-family: Arial; font-size: 5.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,19) scale(1,-1)">Sample graph</text>
+				<rect x="119.05511811023624" y="9.562443935014462" width="8.503937007874015" height="3.677863051928636" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
+				<text x="131.81102362204726" y="9.562443935014462" style="font-family: Arial; font-size: 5.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,19) scale(1,-1)">Reference-guided</text>
+				<rect x="243.77952755905514" y="9.562443935014462" width="8.503937007874015" height="3.677863051928636" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(80%,47%,65%); fill-rule: evenodd;" />
+				<text x="256.5354330708662" y="9.562443935014462" style="font-family: Arial; font-size: 5.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,19) scale(1,-1)">Repeat / NCR</text>
+				<rect x="354.33070866141736" y="9.562443935014462" width="8.503937007874015" height="3.677863051928636" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(48%,51%,54%); fill-rule: evenodd;" />
+				<text x="367.0866141732284" y="9.562443935014462" style="font-family: Arial; font-size: 5.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,19) scale(1,-1)">Backbone / data flow</text>
+			</g>
+		</g>
+	</g>
+</svg>

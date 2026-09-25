@@ -1,0 +1,14 @@
+/target/
+/runs/
+/bin/
+/dist/
+/outputs/
+.DS_Store
+__pycache__/
+*.pyc
+/tmp/
+*.tmp
+*.bak
+*.orig
+*.swp
+*~

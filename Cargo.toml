@@ -1,0 +1,38 @@
+[package]
+name = "mitovarr"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+description = "Native Rust mitochondrial assembly, consensus, gene prediction and tRNA-Pro rotation"
+readme = "README.md"
+keywords = ["mitochondria", "assembly", "bioinformatics", "bam", "fastq"]
+categories = ["science", "command-line-utilities"]
+include = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "src/**",
+    "scripts/**",
+    "tests/**",
+    "docs/**",
+    "README*.md",
+    "CHANGELOG.md",
+    "LICENSE*",
+]
+
+[[bin]]
+name = "mitovarr"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.101"
+clap = { version = "4.5.58", features = ["derive"] }
+flate2 = { version = "1.1.5", default-features = false, features = ["rust_backend"] }
+noodles-bam = "0.85.0"
+noodles-core = "0.18.0"
+noodles-fasta = "0.58.0"
+noodles-sam = "0.81.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+ureq = { version = "3.4.1", default-features = false, features = ["rustls"] }
