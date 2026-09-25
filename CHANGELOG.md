@@ -4,6 +4,7 @@
 
 ### Package and interfaces
 
+- Exclude local AI-assistant files, TODOs, maintainer notes and exploratory-test directories from Git; limit the source package to runtime code, active regression tests and user documentation.
 - Rename the package, library, executable and launcher to `mitovarr`. Preserve existing `mitovar-rust.*` JSON schema identifiers and gene panels; use `mitovarr` as the GFF3 source.
 - Provide an independently buildable Rust package, English and Chinese usage guides, CLI documentation, method descriptions and editable workflow Figure 1. Keep experiment records and analysis outputs outside the repository and source package.
 - Remove unused legacy pileup, variant-refresh and repeat-summary helpers and redundant tests; retain coverage through the production fragment accumulator and portable regression fixtures.

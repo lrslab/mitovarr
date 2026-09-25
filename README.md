@@ -6,7 +6,7 @@ Native Rust tools for mitochondrial read recruitment, **BAM-baited de novo assem
 
 Read extraction, gzip I/O, assembly, consensus and annotation run in-process. No SPAdes, external mapper, samtools or external annotation program is required. Mapping uses existing BAM alignments; this package does not globally align FASTQ.
 
-[Workflow Figure 1](docs/figure_1_workflow/README.md) · [Documentation](docs/README.md) · [CLI reference](docs/cli.md) · [Release preparation](docs/release.md)
+[Workflow Figure 1](docs/figure_1_workflow/README.md) · [Documentation](docs/README.md) · [CLI reference](docs/cli.md)
 
 ## Build and install
 
@@ -130,5 +130,3 @@ cargo clippy --all-targets --all-features --locked -- -D warnings
 ```
 
 The former package/binary names were `mitovar-rust` / `mtasm-rust`; current commands and Rust imports use `mitovarr`. Existing `mitovar-rust.*` JSON schema identifiers and saved gene panels remain compatible. New GFF3 source fields use `mitovarr`. The checkout directory name is independent of the package name.
-
-See [release preparation](docs/release.md) for packaging and outstanding publication metadata.

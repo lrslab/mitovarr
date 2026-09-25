@@ -6,7 +6,7 @@
 
 提取、gzip 读写、图组装、consensus 和注释都在进程内完成，不调用 SPAdes、外部 mapper、samtools 或外部注释程序。Mapping 使用已有 BAM，不负责把原始 FASTQ 全局比对到参考。
 
-[完整流程图](docs/figure_1_workflow/README.md) · [文档目录](docs/README.md) · [实际 CLI 参数](docs/cli.md) · [发布说明](docs/release.md)
+[完整流程图](docs/figure_1_workflow/README.md) · [文档目录](docs/README.md) · [实际 CLI 参数](docs/cli.md)
 
 ## 构建与安装
 
@@ -130,5 +130,3 @@ cargo clippy --all-targets --all-features --locked -- -D warnings
 ```
 
 原包名/命令名为 `mitovar-rust` / `mtasm-rust`，现统一使用 `mitovarr`。为兼容已有报告与基因模型，`mitovar-rust.*` JSON schema 标识保持不变；新 GFF3 的 source 字段改为 `mitovarr`。本地 checkout 目录名不影响包名。
-
-发布打包与尚待填写的元数据见[发布说明](docs/release.md)。

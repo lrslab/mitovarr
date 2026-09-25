@@ -13,7 +13,6 @@ These guides describe the current code and the `mitovarr` executable.
 | Homology, CDS/RNA completeness and tRNA-Pro rotation | [Annotation](annotation.md), [中文规则](annotation.zh-CN.md) |
 | NCR1-4 flanks, short gaps and assembly uncertainty | [NCR definitions](ncr.md) |
 | Complete workflow diagram | [Figure 1: SVG, PDF, PNG and legend](figure_1_workflow/README.md) |
-| Packaging and release metadata | [Release preparation](release.md) |
 
 The package, library and binary are named `mitovarr`. Existing
 `mitovar-rust.*` JSON schema strings remain format identifiers for compatibility

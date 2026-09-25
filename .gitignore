@@ -12,3 +12,33 @@ __pycache__/
 *.orig
 *.swp
 *~
+
+# Local AI-assistant instructions and state
+AGENTS.md
+agents.md
+CLAUDE.md
+GEMINI.md
+.codex/
+.claude/
+.cursor/
+.cursorrules
+.windsurf/
+.windsurfrules
+.aider*
+.github/copilot-instructions.md
+.github/instructions/
+.github/prompts/
+
+# Local planning, experiment records and maintainer-only notes
+/todo.md
+/TODO.md
+/docs/release.md
+/docs/internal/
+/docs/history/
+/docs/experiments/
+/docs/release_review_*.md
+
+# Unused or exploratory tests; keep active regression tests and fixtures
+/tests/unused/
+/tests/scratch/
+/tests/archive/
