@@ -159,9 +159,12 @@ pub struct GraphSettings {
     /// Minimum pair-record support for a retained kmer (mates counted once).
     #[arg(long, default_value_t = 3)]
     pub min_kmer_count: u32,
-    /// Maximum weak/strong support ratio for graph cleanup and repeat routes; 0 disables cleanup.
+    /// Maximum weak/strong support ratio for tips, weak links and repeat routes; 0 disables all cleanup.
     #[arg(long, default_value_t = 0.2)]
     pub max_error_fraction: f64,
+    /// Maximum weak/strong mean coverage ratio for bounded local bubbles; does not relax repeat routes.
+    #[arg(long, default_value_t = 0.49)]
+    pub max_bubble_fraction: f64,
     /// Minimum quality-filtered matching-base fragment depth after gapped validation.
     #[arg(long, default_value_t = 10)]
     pub min_depth: u32,

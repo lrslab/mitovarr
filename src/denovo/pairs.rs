@@ -476,6 +476,7 @@ mod tests {
             k: 63,
             min_kmer_count: 3,
             max_error_fraction: 0.2,
+            max_bubble_fraction: 0.49,
             min_depth: 10,
             min_junction_fragments: 3,
             max_validation_pairs: 10000,

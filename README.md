@@ -1,7 +1,5 @@
 # mitovarr
 
-English | [简体中文](README.zh-CN.md)
-
 Native Rust tools for mitochondrial read recruitment, **BAM-baited de novo assembly**, reference-guided consensus and local reconstruction, gene annotation, and non-coding region (NCR) analysis. The Cargo package, Rust library and executable are all named `mitovarr`.
 
 Read extraction, gzip I/O, assembly, consensus and annotation run in-process. No SPAdes, external mapper, samtools or external annotation program is required. Mapping uses existing BAM alignments; this package does not globally align FASTQ.
@@ -109,6 +107,7 @@ NCR1-4 are positional labels derived from observed flanking genes. Short/zero-le
 | --- | --- |
 | `primary.fasta`, `primary_ambiguity.tsv` | De novo representative and localized uncertainty; may remain unresolved |
 | `candidates.fasta`, path candidate FASTAs | Alternative de novo sequences with selection evidence in JSON |
+| `bubble_alternatives.fasta` | Retained removed/kept spellings when permissive de novo cleanup cannot justify final status |
 | `assembly_graph.gfa`, `path_graph.gfa` | Cleaned unitigs and the path-enumeration graph, respectively |
 | `candidate.fasta` | Mapping consensus candidate, including accepted local replacements when enabled |
 | `reference_candidate.fasta`, `local_assembly.gfa` | Local mode's original pileup backbone and local candidate-path graph |
@@ -117,7 +116,9 @@ NCR1-4 are positional labels derived from observed flanking genes. Short/zero-le
 | `report.json`, evidence TSVs | Input scope, thresholds, coverage, votes, selection and uncertainty |
 | `annotated.fasta`, GFF3, gene/protein FASTAs, NCR tables/FASTA | Independent post-assembly features, sequences and locus states |
 
-De novo final validation requires a uniquely supported main circle, matching-base coverage and supported joins; small unrelated components do not automatically veto it. Mapping final output requires no N or remaining flagged ambiguity and, in local mode, resolved windows. Local contractions of at least `--local-k` bases also require linked unique-flank evidence from at least three named fragments. Full gene annotation or an N-free sequence does not by itself establish NCR structure.
+De novo final validation requires a uniquely supported main circle, matching-base coverage, supported joins and no unresolved permissively collapsed bubble in its original graph component; small unrelated components do not automatically veto it. Mapping final output requires no N or remaining flagged ambiguity and, in local mode, resolved windows. Local contractions of at least `--local-k` bases also require linked unique-flank evidence from at least three named fragments. Full gene annotation or an N-free sequence does not by itself establish NCR structure.
+
+De novo bubble cleanup compares whole-path mean coverage (`--max-bubble-fraction 0.49`) within bounded local alternatives; tip and repeat-route thresholds remain separately controlled by `--max-error-fraction 0.2`. Mapping local assembly can pool smaller-k read-graph connections across a main-k break, keeping the original full flanks and all fragment-validation requirements. See the method guides for limits and biological-allele caveats.
 
 Exit codes: **0** completed under the command's rules; **2** unresolved assembly/recruitment or extraction with no complete pairs; **1** input/runtime error. Annotation can exit 0 while reporting missing genes or a skipped rotation. CLI usage errors also use Clap's exit code 2; inspect the message/report to distinguish them.
 

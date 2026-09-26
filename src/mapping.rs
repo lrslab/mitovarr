@@ -143,6 +143,7 @@ pub(crate) fn assemble(
         k: args.local_k,
         min_kmer_count: 3,
         max_error_fraction: 0.2,
+        max_bubble_fraction: 0.49,
         min_depth: args.min_depth,
         min_junction_fragments: 3,
         max_validation_pairs: args.max_records,
@@ -166,6 +167,7 @@ pub(crate) fn assemble(
     let mut events = BufWriter::new(File::create(args.out.join("structural_variants.tsv"))?);
     writeln!(events,"locus\tref_window_start\tref_window_end\twraps_origin\tbaseline_length\tselected_length\tdelta\tstatus\tselected_candidate\treason")?;
     let mut reports = Vec::new();
+    let mut fallback_graphs = HashMap::<usize, Graph>::new();
     let mut patches = Vec::<Patch>::new();
     let mut resolved_mask = vec![false; backbone.len()];
     let mut previous_end = 0;
@@ -196,13 +198,45 @@ pub(crate) fn assemble(
         previous_end = end;
         evaluated_intervals[number] = (start, end);
         let baseline = backbone[start..end].to_vec();
-        let search = graph.paths(
+        let mut search = graph.paths(
             &baseline[..graph.k],
             &baseline[baseline.len() - graph.k..],
             args.local_max_span,
             args.local_max_paths,
             args.min_depth,
         );
+        let mut proposals = vec![
+            json!({"k":graph.k,"paths":search.paths.len(),"states":search.states,"limits":search.limits}),
+        ];
+        // Smaller k can bridge a coverage break. Keep the original full flanks,
+        // pool all proposed spellings before scoring, and retain every limit.
+        // No reference bases are supplied to a gap: sequences come from FASTQ.
+        if search.paths.is_empty() && search.limits.is_empty() {
+            for k in [21, 15].into_iter().filter(|&k| k < graph.k) {
+                if let std::collections::hash_map::Entry::Vacant(entry) = fallback_graphs.entry(k) {
+                    entry.insert(Graph::build(&reads, k, args.min_baseq, args.max_records)?);
+                }
+                let fallback = &fallback_graphs[&k];
+                let mut extra = fallback.anchored_paths(
+                    &baseline[..graph.k],
+                    &baseline[baseline.len() - graph.k..],
+                    args.local_max_span,
+                    args.local_max_paths,
+                    args.min_depth,
+                );
+                proposals.push(json!({"k":k,"paths":extra.paths.len(),"states":extra.states,"limits":extra.limits}));
+                search.states += extra.states;
+                search.low_support_edges_excluded += extra.low_support_edges_excluded;
+                search.limits.extend(extra.limits);
+                search.paths.append(&mut extra.paths);
+            }
+            search.paths.sort_by(|a, b| a.0.cmp(&b.0));
+            search.paths.dedup_by(|a, b| a.0 == b.0);
+            if search.paths.len() >= args.local_max_paths {
+                search.limits.insert("pooled_path_limit");
+                search.paths.truncate(args.local_max_paths);
+            }
+        }
         let mut alternatives = vec![Alternative {
             support: path_support(&graph, &baseline),
             sequence: baseline.clone(),
@@ -332,6 +366,7 @@ pub(crate) fn assemble(
             json!({"start":ref_start,"end":ref_end,"wraps_origin":baseline_start>baseline_end});
         entry["baseline_segments"] = json!(segments(baseline_start, end - start, backbone.len()));
         entry["candidates_fasta"] = json!(format!("local_assembly/{prefix}.fasta"));
+        entry["graph_proposals"] = json!(proposals);
         entry["search"] = json!({"states":search.states,"limits":search.limits,"low_support_edges_excluded":search.low_support_edges_excluded});
         reports.push(entry);
     }
@@ -426,7 +461,7 @@ pub(crate) fn assemble(
     let report = json!({"schema":"mitovar-rust.mapping-local.v1","workflow":"reference_guided_local_assembly",
         "r1":reads.r1.canonicalize()?,"r2":reads.r2.canonicalize()?,"read_scope":"provided complete pairs; may be mt-bam-extracted, not assumed whole-sample",
         "discovery_signals":reasons,"named_pairs":graph.pairs,"sample_kmers":graph.counts.len(),"weak_graph_edges_removed":graph.weak_edges_removed,"fragment_model":training.report,
-        "parameters":{"k":graph.k,"minimum_kmer_fragments":3,"minimum_path_kmer_fragments":args.min_depth,"minimum_junction_fragments":3,"breakpoint_cluster_width":7,"minimum_breakpoint_depth_fraction":0.05,"weak_edge_filter":"support < 0.02 of strongest outgoing edge, independent of absolute depth","max_span":args.local_max_span,"max_paths":args.local_max_paths,"max_states":200000,"max_visits_per_node":4,"max_kmers":2000000},
+        "parameters":{"k":graph.k,"minimum_kmer_fragments":3,"minimum_path_kmer_fragments":args.min_depth,"minimum_junction_fragments":3,"breakpoint_cluster_width":7,"minimum_breakpoint_depth_fraction":0.05,"weak_edge_filter":"support < 0.02 of strongest outgoing edge, independent of absolute depth","max_span":args.local_max_span,"max_paths":args.local_max_paths,"max_states":200000,"max_visits_per_node":4,"max_kmers":2000000,"fallback_k":[21,15],"fallback_rule":"only when main graph has no path and no search limit; retain full main-k flanks; pool and jointly score proposals"},
         "windows":reports,"applied_replacements":patches.len(),"all_windows_resolved":resolved,"remaining_repeat_intervals":unresolved_ambiguity,
         "internal_rotation_baseline_offset":cut,"output_origin_shifted_to_supported_anchor":shifted_origin,
         "coordinate_system":"one-based inclusive; baseline_segments refer to reference_candidate.fasta; output_segments refer to candidate.fasta; pileup TSVs remain reference-based",

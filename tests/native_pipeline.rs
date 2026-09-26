@@ -825,3 +825,71 @@ fn three_haplotype_mixture_cannot_publish_absent_majority_haplotype() {
     assert!(primary.sequence.len() >= 1000);
     assert!(dir.path("mixture/primary_ambiguity.tsv").exists());
 }
+
+#[test]
+fn four_haplotype_mixture_does_not_publish_sequence_created_by_bubble_cleanup() {
+    let dir = Fixture::new();
+    let base = dna(1800, 8817923);
+    let mut reads = Vec::new();
+    for (allele, position) in [1050, 1200, 1350, 1500].into_iter().enumerate() {
+        let mut genome = base.clone();
+        genome[position] = if genome[position] == b'A' { b'C' } else { b'A' };
+        for start in 0..genome.len() {
+            let a = (0..100)
+                .map(|i| genome[(start + i) % genome.len()])
+                .collect();
+            let b: Vec<_> = (0..100)
+                .map(|i| genome[(start + 150 + i) % genome.len()])
+                .collect();
+            reads.push((format!("hap{allele}_{start}"), a, reverse_complement(&b)));
+        }
+    }
+    write_reads(&dir, &reads, false);
+    assert!(!assembly(&dir, "assemble-denovo", "mixture", &[]));
+    assert!(!dir.path("mixture/consensus.fasta").exists());
+    let result = report(&dir, "mixture");
+    assert_eq!(result["primary"]["final_verified"], false);
+    assert_eq!(result["reason"], "supported_bubble_alternatives");
+    assert!(result["validation"]["passed"].as_bool().unwrap());
+    assert_eq!(
+        result["graph_simplification"]["retained_bubble_alternatives"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    let primary = load_reference(&dir.path("mixture/primary.fasta"), None).unwrap();
+    assert!(equivalent_circle(&base, &primary.sequence));
+    assert!(dir.path("mixture/bubble_alternatives.fasta").exists());
+    assert!(
+        fs::read_to_string(dir.path("mixture/primary_ambiguity.tsv"))
+            .unwrap()
+            .contains("collapsed_bubble_component_unresolved")
+    );
+}
+
+#[test]
+fn collapsed_alternatives_in_a_disconnected_component_do_not_veto_main_circle() {
+    let dir = Fixture::new();
+    let genome = dna(600, 72341);
+    let mut reads = circle_reads(&genome);
+    let other = dna(150, 927323);
+    let mut minor = other.clone();
+    minor[75] = if minor[75] == b'A' { b'C' } else { b'A' };
+    for (id, (s, count)) in [(&other, 100), (&minor, 30)].into_iter().enumerate() {
+        for i in 0..count {
+            reads.push((format!("noise_{id}_{i}"), s.to_vec(), reverse_complement(s)));
+        }
+    }
+    write_reads(&dir, &reads, false);
+    assert!(assembly(&dir, "assemble-denovo", "separate", &[]));
+    let result = report(&dir, "separate");
+    assert!(
+        !result["graph_simplification"]["retained_bubble_alternatives"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let assembled = load_reference(&dir.path("separate/consensus.fasta"), None).unwrap();
+    assert!(equivalent_circle(&genome, &assembled.sequence));
+}

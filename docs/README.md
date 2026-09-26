@@ -4,7 +4,7 @@ These guides describe the current code and the `mitovarr` executable.
 
 | Topic | Guide |
 | --- | --- |
-| Installation, inputs and examples | [English README](../README.md), [中文 README](../README.zh-CN.md) |
+| Installation, inputs and examples | [README](../README.md) |
 | Exact commands and defaults | [CLI help exported from the executable](cli.md) |
 | CaenDR BAM extraction and mate recovery | [CaenDR interface](caendr.md) |
 | Sample graph, cleanup and final-output rules | [Native de novo assembly](de_novo.md) |

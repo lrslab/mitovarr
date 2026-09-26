@@ -18,7 +18,18 @@ supporting reads.
    intervals. Handle intervals crossing the mitochondrial origin.
 2. Find supported flanks and enumerate bounded sample graph paths between them.
    Include the unmodified pileup candidate in each comparison. Keep graph and
-   candidate sequence outputs for inspection; report resource limits.
+   candidate sequence outputs for inspection; report resource limits. When the
+   main graph finds no connecting path without hitting a limit, lazily build
+   sample-only k=21 and k=15 graphs (only values below `--local-k`). Pool their
+   paths, retaining the complete original main-k flanks on both sides. The
+   traversal follows sample edges through the entire left flank and stops only
+   at the complete right flank. Internal copies of shorter flank sequences do
+   not terminate the search or count as revisiting the complete left anchor.
+   Apply
+   the same minimum depth and path/span bounds. Any fallback or pooled-path
+   limit keeps the window unresolved. Smaller k never supplies reference-filled
+   gap sequence. Each window reports `graph_proposals` with k, paths, states and
+   limits; accepted proposals still require the fragment comparison below.
 3. Reuse the native full-query affine-gap aligner and empirical fragment model.
    Compare the same fragments against whole-contig alternatives, retaining the
    original homologous locus in every alternative. Shared repeat reads must not

@@ -99,6 +99,19 @@ impl Graph {
             .unwrap_or(0)
     }
 
+    /// Keep complete original flanks in the traversal state: a repeated shorter
+    /// flank node alone must neither stop the walk nor count as an anchor revisit.
+    pub fn anchored_paths(
+        &self,
+        left: &[u8],
+        right: &[u8],
+        max_span: usize,
+        max_paths: usize,
+        min_support: u32,
+    ) -> Search {
+        self.paths(left, right, max_span, max_paths, min_support)
+    }
+
     pub fn paths(
         &self,
         left: &[u8],
@@ -107,16 +120,20 @@ impl Graph {
         max_paths: usize,
         min_support: u32,
     ) -> Search {
-        let start = code(&left[1..]).unwrap();
-        let target = code(&right[1..]).unwrap();
-        if start == target {
+        assert!(left.len() >= self.k && right.len() >= self.k);
+        let full_flanks = left.len() > self.k || right.len() > self.k;
+        let seed = &left[..self.k];
+        let start = code(&seed[1..]).unwrap();
+        let target = code(&right[right.len() - self.k + 1..]).unwrap();
+        if start == target && !full_flanks {
             return Search {
                 limits: BTreeSet::from(["coincident_flank_nodes"]),
                 ..Search::default()
             };
         }
-        // Exclude excursions around the rest of the mitochondrial circle that
-        // would revisit the unique left anchor before reaching the right one.
+        // Distance is a lower bound to the right flank's terminal node. With
+        // longer flanks, keep repeated short nodes reachable and reject full
+        // left-anchor revisits during traversal instead.
         let mut distance = HashMap::from([(target, 0usize)]);
         let mut queue = VecDeque::from([target]);
         while let Some(node) = queue.pop_front() {
@@ -131,7 +148,7 @@ impl Graph {
                 {
                     continue;
                 }
-                if p != start && !distance.contains_key(&p) {
+                if (full_flanks || p != start) && !distance.contains_key(&p) {
                     distance.insert(p, distance[&node] + 1);
                     queue.push_back(p);
                 }
@@ -139,17 +156,20 @@ impl Graph {
         }
         let mut search = Search::default();
         let mut low_support = HashSet::new();
-        let mut sequence = left.to_vec();
+        let mut sequence = seed.to_vec();
         let mut visits = HashMap::from([(start, 1usize)]);
-        let mut stack = vec![(start, 0usize, self.support(left))];
+        let mut stack = vec![(start, 0usize, self.support(seed))];
         while let Some(&(node, edge, minimum)) = stack.last() {
             if search.states >= 200_000 || search.paths.len() >= max_paths {
                 search.limits.insert("path_or_state_limit");
                 break;
             }
             let edges = self.next.get(&node).map(Vec::as_slice).unwrap_or(&[]);
-            if edge == edges.len() || (node == target && stack.len() > 1) {
-                if edge == 0 && node == target && sequence.ends_with(right) {
+            let reached = node == target
+                && stack.len() > 1
+                && (!full_flanks || (sequence.len() >= left.len() && sequence.ends_with(right)));
+            if edge == edges.len() || reached {
+                if edge == 0 && reached && sequence.ends_with(right) {
                     search.paths.push((sequence.clone(), minimum));
                 }
                 stack.pop();
@@ -166,7 +186,19 @@ impl Graph {
                 low_support.insert((node, to));
                 continue;
             }
-            if to == start || !distance.contains_key(&to) {
+            // Every additional left-flank base must be a supported graph edge;
+            // never prepend a supplied flank across a missing sample edge.
+            if sequence.len() < left.len() && base != left[sequence.len()] {
+                continue;
+            }
+            let revisits_left = if full_flanks {
+                sequence.len() >= left.len()
+                    && base == left[left.len() - 1]
+                    && sequence.ends_with(&left[..left.len() - 1])
+            } else {
+                to == start
+            };
+            if revisits_left || !distance.contains_key(&to) {
                 continue;
             }
             if sequence.len() + 1 + distance[&to] > max_span {
@@ -199,6 +231,148 @@ pub(super) struct Search {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn smaller_k_preserves_full_flanks_through_repeated_short_anchor_nodes() {
+        use std::{fs, io::Write};
+        let dir = std::env::temp_dir().join(format!("mapping-full-flanks-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let reads = Reads {
+            r1: dir.join("r1.fq"),
+            r2: dir.join("r2.fq"),
+        };
+        for case in ["internal_right", "internal_left", "coincident_nodes"] {
+            let mut state = 9832897u64;
+            let mut sequence: Vec<_> = (0..220)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    b"ACGT"[(state >> 32) as usize & 3]
+                })
+                .collect();
+            let repeated = if case == "internal_right" {
+                sequence[199..].to_vec()
+            } else {
+                sequence[..21].to_vec()
+            };
+            let destination = if case == "coincident_nodes" {
+                199..220
+            } else {
+                85..106
+            };
+            sequence[destination].copy_from_slice(&repeated);
+            let left = &sequence[..31];
+            let right = &sequence[189..];
+            for flank in [left, right] {
+                assert_eq!(sequence.windows(31).filter(|s| *s == flank).count(), 1);
+            }
+            for mate in [1, 2] {
+                let mut f =
+                    fs::File::create(if mate == 1 { &reads.r1 } else { &reads.r2 }).unwrap();
+                for start in 0..=180 {
+                    // The center has reads too short for k=31, but both full
+                    // flanks and every k=21/15 edge have ample sample support.
+                    let len = if !(20..160).contains(&start) { 40 } else { 25 };
+                    let s = &sequence[start..start + len];
+                    for n in 0..12 {
+                        writeln!(
+                            f,
+                            "@p{start}_{n}/{mate}\n{}\n+\n{}",
+                            String::from_utf8_lossy(s),
+                            "I".repeat(len)
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            let main = Graph::build(&reads, 31, 20, 10000).unwrap();
+            assert!(main.support(left) >= 10 && main.support(right) >= 10);
+            let initial = main.paths(left, right, 300, 128, 10);
+            assert!(initial.paths.is_empty() && initial.limits.is_empty());
+            for k in [21, 15] {
+                let small = Graph::build(&reads, k, 20, 10000).unwrap();
+                assert!(sequence.windows(k).all(|s| small.support(s) >= 10));
+                let result = small.anchored_paths(left, right, 2000, 128, 10);
+                assert!(
+                    result.limits.is_empty(),
+                    "{case}, k={k}: {:?}",
+                    result.limits
+                );
+                assert!(
+                    result.paths.iter().any(|(s, _)| *s == sequence),
+                    "missing supported path: {case}, k={k}"
+                );
+                assert!(result.paths.iter().all(|(s, support)| {
+                    s.starts_with(left) && s.ends_with(right) && *support >= 10
+                }));
+                let bounded = small.anchored_paths(left, right, sequence.len() - 1, 128, 10);
+                assert!(bounded.limits.contains("sequence_span_limit"));
+                assert!(!bounded.paths.iter().any(|(s, _)| *s == sequence));
+            }
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn smaller_k_recovers_short_read_bridge_without_relaxing_full_flanks() {
+        use std::{fs, io::Write};
+        let dir = std::env::temp_dir().join(format!("mapping-small-k-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let reads = Reads {
+            r1: dir.join("r1.fq"),
+            r2: dir.join("r2.fq"),
+        };
+        let mut state = 9832897u64;
+        let sequence: Vec<_> = (0..180)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                b"ACGT"[(state >> 32) as usize & 3]
+            })
+            .collect();
+        let fragments: Vec<_> = (0..=140)
+            .map(|p| {
+                let len = if !(20..120).contains(&p) { 40 } else { 25 };
+                &sequence[p..p + len]
+            })
+            .collect();
+        for mate in [1, 2] {
+            let mut f = fs::File::create(if mate == 1 { &reads.r1 } else { &reads.r2 }).unwrap();
+            for (i, s) in fragments.iter().enumerate() {
+                for n in 0..3 {
+                    writeln!(
+                        f,
+                        "@p{i}_{n}/{mate}\n{}\n+\n{}",
+                        String::from_utf8_lossy(s),
+                        "I".repeat(s.len())
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        let main = Graph::build(&reads, 31, 20, 10000).unwrap();
+        let left = &sequence[..31];
+        let right = &sequence[149..];
+        assert!(main.paths(left, right, 300, 128, 3).paths.is_empty());
+        let small = Graph::build(&reads, 21, 20, 10000).unwrap();
+        let result = small.anchored_paths(left, right, 300, 128, 3);
+        assert!(result.limits.is_empty());
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.paths[0].0, sequence);
+        let mut wrong = left.to_vec();
+        wrong[25] = if wrong[25] == b'A' { b'C' } else { b'A' };
+        assert!(small
+            .anchored_paths(&wrong, right, 300, 128, 3)
+            .paths
+            .is_empty());
+        assert!(small
+            .anchored_paths(left, right, 100, 128, 3)
+            .limits
+            .contains("sequence_span_limit"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn depth_scaling_does_not_revive_rare_error_paths_or_remove_minor_paths() {
         use std::{fs, io::Write};

@@ -1,5 +1,6 @@
 //! Conservative sample-only de Bruijn graph. No reference or seed input exists here.
 pub(crate) mod align;
+mod bubbles;
 pub(crate) mod pairs;
 mod paths;
 mod threading;
@@ -11,7 +12,7 @@ use crate::{
 use anyhow::{ensure, Result};
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     fs::File,
     io::{BufWriter, Write},
     path::Path,
@@ -34,6 +35,7 @@ struct Unitig {
     circular: bool,
     mean_count: f64,
     max_count: u32,
+    min_count: u32,
     first_count: u32,
     last_count: u32,
 }
@@ -98,11 +100,13 @@ fn walk(
     let mut sequence = graph_kmer::decode(edges[first].from, k - 1);
     let mut edge_id = first;
     let (mut total_count, mut max_count, mut length) = (0u64, 0u32, 0usize);
+    let mut min_count = u32::MAX;
     loop {
         visited[edge_id] = true;
         let edge = &edges[edge_id];
         total_count += u64::from(edge.count);
         max_count = max_count.max(edge.count);
+        min_count = min_count.min(edge.count);
         length += 1;
         sequence.push(edge.code.last_base());
         let next = outgoing.get(&edge.to);
@@ -114,6 +118,7 @@ fn walk(
                 circular: false,
                 mean_count: total_count as f64 / length as f64,
                 max_count,
+                min_count,
                 first_count: edges[first].count,
                 last_count: edge.count,
             };
@@ -127,6 +132,7 @@ fn walk(
                 circular: next == first,
                 mean_count: total_count as f64 / length as f64,
                 max_count,
+                min_count,
                 first_count: edges[first].count,
                 last_count: edge.count,
             };
@@ -209,69 +215,94 @@ fn similar_paths(a: &[u8], b: &[u8], max_edits: usize) -> bool {
     row[b.len()] <= max_edits
 }
 
-/// Find a stronger, short path joining the same two junctions as a weak unitig.
-/// Repeat segments have out-degree one at their entrance / in-degree one at exit,
-/// so the caller never submits them for removal. Search exhaustion retains the path.
+/// Compare complete compacted paths between the same junctions. Coverage is
+/// averaged over path edges, so a single high/low k-mer does not veto a bubble.
+/// Only short, similar spellings qualify; loops and conjugate traversals remain.
 fn stronger_bubble_path(
-    weak: &Unitig,
-    edges: &[Edge],
-    outgoing: &HashMap<graph_kmer::Code, Vec<usize>>,
+    weak_id: usize,
+    unitigs: &[Unitig],
+    starts: &HashMap<graph_kmer::Code, Vec<usize>>,
     removed: &HashSet<graph_kmer::Code>,
     k: usize,
     fraction: f64,
-) -> bool {
-    let max_length = 2 * k;
-    let max_edits = 3;
-    let mut weak_first = graph_kmer::Code::default();
-    graph_kmer::visit(&weak.sequence[..k], None, k, 0, |_, code| weak_first = code);
-    // (node, previous state, edge, distance). One visit per node prevents loops.
-    let mut states = vec![(weak.from, 0usize, usize::MAX, 0usize)];
-    let mut seen = HashSet::from([weak.from]);
-    let mut queue = VecDeque::from([0usize]);
-    while let Some(state_id) = queue.pop_front() {
-        let (node, _, _, distance) = states[state_id];
-        if distance >= max_length {
-            continue;
-        }
-        for &edge_id in outgoing.get(&node).into_iter().flatten() {
-            let edge = &edges[edge_id];
-            if edge.code == weak_first
-                || removed.contains(&edge.code)
-                || f64::from(weak.max_count) > f64::from(edge.count) * fraction
-                || !seen.insert(edge.to)
+) -> Option<bubbles::Alternative> {
+    let weak = &unitigs[weak_id];
+    let max_length = 3 * k;
+    let max_edits = 3.max((weak.sequence.len() - k + 1) / 10);
+    let reverse_from = graph_kmer::reverse_code(weak.to, k - 1);
+    let reverse_to = graph_kmer::reverse_code(weak.from, k - 1);
+    // A bounded simple-path search on unitigs, rather than one visit per k-mer
+    // node: different coverage histories reaching a node must remain distinct.
+    let mut stack = vec![(weak.from, Vec::<usize>::new(), 0usize, 0.0)];
+    let mut states = 0;
+    while let Some((node, path, length, mass)) = stack.pop() {
+        for &id in starts.get(&node).into_iter().flatten() {
+            states += 1;
+            if states > 4096 {
+                return None;
+            }
+            let u = &unitigs[id];
+            let n = u.sequence.len() - k + 1;
+            if id == weak_id
+                || u.from == u.to
+                || u.circular
+                || u.to == weak.from
+                || (u.from == reverse_from && u.to == reverse_to)
+                || length + n > max_length
+                || path.iter().any(|&p| {
+                    let old = &unitigs[p];
+                    old.from == u.to
+                        || (u.from == graph_kmer::reverse_code(old.to, k - 1)
+                            && u.to == graph_kmer::reverse_code(old.from, k - 1))
+                })
             {
                 continue;
             }
-            states.push((edge.to, state_id, edge_id, distance + 1));
-            let next_id = states.len() - 1;
-            if edge.to == weak.to {
-                let mut path = Vec::new();
-                let mut cursor = next_id;
-                while cursor != 0 {
-                    let (_, parent, edge_id, _) = states[cursor];
-                    path.push(edges[edge_id].code.last_base());
-                    cursor = parent;
+            let mut unavailable = false;
+            graph_kmer::visit(&u.sequence, None, k, 0, |_, c| {
+                unavailable |= removed.contains(&c);
+            });
+            if unavailable {
+                continue;
+            }
+            let new_mass = mass + u.mean_count * n as f64;
+            let mut route = path.clone();
+            route.push(id);
+            if u.to == weak.to {
+                if weak.mean_count <= fraction * new_mass / (length + n) as f64 {
+                    let mut sequence = graph_kmer::decode(weak.from, k - 1);
+                    for &p in &route {
+                        sequence.extend_from_slice(&unitigs[p].sequence[k - 1..]);
+                    }
+                    if similar_paths(&weak.sequence, &sequence, max_edits) {
+                        let minimum = route.iter().map(|&p| unitigs[p].min_count).min().unwrap();
+                        return Some(bubbles::Alternative {
+                            sequence,
+                            mean_count: new_mass / (length + n) as f64,
+                            min_count: minimum,
+                        });
+                    }
                 }
-                path.reverse();
-                let mut sequence = graph_kmer::decode(weak.from, k - 1);
-                sequence.extend(path);
-                return similar_paths(&weak.sequence, &sequence, max_edits);
+            } else {
+                stack.push((u.to, route, length + n, new_mass));
             }
-            if states.len() > 4 * max_length {
-                return false;
-            }
-            queue.push_back(next_id);
         }
     }
-    false
+    None
 }
 
 /// Topology-aware error removal uses local competing support, never a genome length,
 /// reference, global coverage cutoff, or a choice of route through an unbridged repeat.
-fn simplify(edges: &mut Vec<Edge>, k: usize, fraction: f64) -> (Vec<Unitig>, usize, Value) {
+fn simplify(
+    edges: &mut Vec<Edge>,
+    k: usize,
+    fraction: f64,
+    bubble_fraction: f64,
+) -> (Vec<Unitig>, usize, Value, Vec<bubbles::Collapsed>) {
     let (mut unitigs, mut branches) = compact(edges, k);
     let (raw_kmers, raw_branches) = (edges.len() / 2, branches);
     let (mut rounds, mut tip_kmers, mut bubble_kmers, mut weak_link_kmers) = (0, 0, 0, 0);
+    let mut alternatives = std::collections::BTreeMap::new();
     if fraction > 0.0 {
         loop {
             let mut starts: HashMap<graph_kmer::Code, Vec<usize>> = HashMap::new();
@@ -316,10 +347,6 @@ fn simplify(edges: &mut Vec<Edge>, k: usize, fraction: f64) -> (Vec<Unitig>, usi
             let tips = removed.len() / 2;
             // Recompact after tip clipping before interpreting bubbles.
             if removed.is_empty() {
-                let mut outgoing: HashMap<graph_kmer::Code, Vec<usize>> = HashMap::new();
-                for (id, edge) in edges.iter().enumerate() {
-                    outgoing.entry(edge.from).or_default().push(id);
-                }
                 let mut order: Vec<_> = (0..unitigs.len()).collect();
                 order
                     .sort_by_key(|id| (unitigs[*id].max_count, unitigs[*id].from, unitigs[*id].to));
@@ -327,13 +354,26 @@ fn simplify(edges: &mut Vec<Edge>, k: usize, fraction: f64) -> (Vec<Unitig>, usi
                     let unitig = &unitigs[id];
                     if unitig.circular
                         || unitig.from == unitig.to
-                        || unitig.sequence.len() - k + 1 > 2 * k
+                        || unitig.sequence.len() - k + 1 > 3 * k
                         || starts[&unitig.from].len() < 2
                         || ends[&unitig.to].len() < 2
                     {
                         continue;
                     }
-                    if stronger_bubble_path(unitig, edges, &outgoing, &removed, k, fraction) {
+                    if let Some(alternative) =
+                        stronger_bubble_path(id, &unitigs, &starts, &removed, k, bubble_fraction)
+                    {
+                        // The more permissive cleanup may improve the primary,
+                        // but must not erase evidence needed for final status.
+                        let conservative = unitig.sequence.len() - k < 2 * k
+                            && alternative.sequence.len() - k < 2 * k
+                            && f64::from(unitig.max_count)
+                                <= fraction * f64::from(alternative.min_count)
+                            && similar_paths(&unitig.sequence, &alternative.sequence, 3);
+                        if !conservative {
+                            let bubble = bubbles::Collapsed::new(unitig, alternative);
+                            alternatives.entry(bubble.removed.clone()).or_insert(bubble);
+                        }
                         graph_kmer::visit(&unitig.sequence, None, k, 0, |_, code| {
                             removed.insert(code);
                             removed.insert(graph_kmer::reverse_code(code, k));
@@ -396,8 +436,9 @@ fn simplify(edges: &mut Vec<Edge>, k: usize, fraction: f64) -> (Vec<Unitig>, usi
             rounds += 1;
         }
     }
-    let stats = json!({"method":"short tips, near-identical bubbles, weak boundary disconnection; strand-symmetric local support", "max_error_fraction":fraction, "max_path_kmers":2*k,"max_bubble_edits":3,"rounds":rounds,"raw_canonical_kmers":raw_kmers,"raw_directed_branch_nodes":raw_branches,"tip_kmers_removed":tip_kmers,"bubble_kmers_removed":bubble_kmers,"weak_link_kmers_removed":weak_link_kmers,"cleaned_canonical_kmers":edges.len()/2,"cleaned_directed_branch_nodes":branches});
-    (unitigs, branches, stats)
+    let alternatives: Vec<_> = alternatives.into_values().collect();
+    let stats = json!({"retained_bubble_alternatives":bubbles::reports(&alternatives),"bubble_alternatives_file":if alternatives.is_empty(){None}else{Some("bubble_alternatives.fasta")},"method":"short tips, whole-path coverage bubbles, weak boundary disconnection; strand-symmetric local support", "max_error_fraction":fraction,"max_bubble_fraction":bubble_fraction, "max_path_kmers":3*k,"max_bubble_edits":3.max(3*k/10),"bubble_edit_rule":"max(3, weak_path_kmers / 10)","bubble_support":"length-weighted mean pair-record kmer support","max_bubble_search_states":4096,"rounds":rounds,"raw_canonical_kmers":raw_kmers,"raw_directed_branch_nodes":raw_branches,"tip_kmers_removed":tip_kmers,"bubble_kmers_removed":bubble_kmers,"weak_link_kmers_removed":weak_link_kmers,"cleaned_canonical_kmers":edges.len()/2,"cleaned_directed_branch_nodes":branches});
+    (unitigs, branches, stats, alternatives)
 }
 
 fn write_graph(out: &Path, unitigs: &[Unitig], k: usize) -> Result<()> {
@@ -547,6 +588,11 @@ pub fn assemble(
         "--max-error-fraction must be at least 0 and less than 0.5"
     );
     ensure!(
+        settings.max_bubble_fraction.is_finite()
+            && (0.0..0.5).contains(&settings.max_bubble_fraction),
+        "--max-bubble-fraction must be at least 0 and less than 0.5"
+    );
+    ensure!(
         settings.min_kmer_count > 0
             && settings.min_depth > 0
             && settings.min_junction_fragments > 0
@@ -584,17 +630,47 @@ pub fn assemble(
         "building sample-only graph"
     );
     let (mut edges, _, _) = graph(&counts, settings.k, settings.min_kmer_count);
-    let (unitigs, branches, simplification) =
-        simplify(&mut edges, settings.k, settings.max_error_fraction);
+    let (unitigs, branches, simplification, collapsed_bubbles) = simplify(
+        &mut edges,
+        settings.k,
+        settings.max_error_fraction,
+        settings.max_bubble_fraction,
+    );
     info!(
         raw_branches = simplification["raw_directed_branch_nodes"].as_u64(),
         branches, "simplified sample-only graph"
+    );
+    bubbles::write(out, &collapsed_bubbles)?;
+    let bubble_components = bubbles::Components::new(
+        &counts,
+        &collapsed_bubbles,
+        settings.k,
+        settings.min_kmer_count,
     );
     write_graph(out, &unitigs, settings.k)?;
     let threaded = threading::candidates(&unitigs, reads, settings, limits)?;
     let unresolved_branches = threaded.unresolved;
     let read_threading = threaded.report;
-    let path_resolution = paths::resolve(&threaded.graph, reads, out, settings, limits)?;
+    let mut path_resolution = paths::resolve(&threaded.graph, reads, out, settings, limits)?;
+    for primary in &mut path_resolution.primary_candidates {
+        let affected = bubble_components.affected(&primary.candidate, settings.k);
+        if !affected.is_empty() {
+            primary.regions.push(paths::primary::Region {
+                start: 0,
+                end: primary.candidate.sequence.len(),
+                evidence: format!(
+                    "collapsed_bubbles_{}",
+                    affected
+                        .iter()
+                        .map(usize::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+                reason: "collapsed_bubble_component_unresolved",
+                alternatives: affected.len(),
+            });
+        }
+    }
     let candidates = path_resolution.candidates;
     let records: Vec<_> = candidates
         .iter()
@@ -641,7 +717,10 @@ pub fn assemble(
         None
     };
     let selected = selected_id.map(|id| &candidates[id]);
-    let (validation, complete) = if let Some(candidate) = selected {
+    let selected_bubbles = selected
+        .map(|c| bubble_components.affected(c, settings.k))
+        .unwrap_or_default();
+    let (mut validation, read_validated) = if let Some(candidate) = selected {
         validate(
             validation_reads,
             &candidate.sequence,
@@ -655,6 +734,13 @@ pub fn assemble(
     } else {
         (Value::Null, false)
     };
+    let complete = read_validated && selected_bubbles.is_empty();
+    if let Some(object) = validation.as_object_mut() {
+        object.insert(
+            "unresolved_collapsed_bubbles".into(),
+            json!(selected_bubbles),
+        );
+    }
     let primary = paths::primary::write_primary(
         path_resolution.primary_candidates,
         &counts,
@@ -664,6 +750,8 @@ pub fn assemble(
     )?;
     let reason = if complete {
         "supported_dominant_circle"
+    } else if !selected_bubbles.is_empty() {
+        "supported_bubble_alternatives"
     } else if selected.is_some() {
         if bam_baited {
             "insufficient_extracted_read_or_junction_support"
@@ -700,7 +788,7 @@ pub fn assemble(
     let report = json!({
         "schema":"mitovar-rust.assembly.v1", "backend":"rust-de-bruijn", "workflow":if bam_baited {"bam_baited_de_novo"} else if recruitment.is_some(){"seed_recruited_de_novo"}else{"reference_blind_de_novo"},
         "status":if complete{"complete"}else{"unresolved"},"reason":reason,"final_published":complete,
-        "parameters":{"k":settings.k,"min_kmer_count":settings.min_kmer_count,"max_error_fraction":settings.max_error_fraction,"min_baseq":limits.min_baseq,"min_depth":settings.min_depth,"min_junction_fragments":settings.min_junction_fragments,"max_kmers":limits.max_kmers,"max_validation_pairs":settings.max_validation_pairs},
+        "parameters":{"k":settings.k,"min_kmer_count":settings.min_kmer_count,"max_error_fraction":settings.max_error_fraction,"max_bubble_fraction":settings.max_bubble_fraction,"min_baseq":limits.min_baseq,"min_depth":settings.min_depth,"min_junction_fragments":settings.min_junction_fragments,"max_kmers":limits.max_kmers,"max_validation_pairs":settings.max_validation_pairs},
         "input_scope":if bam_baited {"mt-bam-extracted"} else {"original-paired-fastq"},"validation_scope":if bam_baited {"mt-bam-extracted"} else {"original-complete-paired-fastq"},
         "assembly_r1":reads.r1.canonicalize()?,"assembly_r2":reads.r2.canonicalize()?,"assembly_reads":scan,
         "distinct_kmers":counts.len(),"retained_canonical_kmers":edges.len()/2,"minimum_retained_pair_count":edges.iter().map(|e|e.count).min(),"directed_branch_nodes":branches,
@@ -709,7 +797,7 @@ pub fn assemble(
         "paired_path_resolution":path_resolution.report,
         "primary":primary,
         "candidate_count":candidates.len(),"candidates":candidates.iter().enumerate().map(|(i,c)|json!({"id":format!("candidate_{}",i+1),"length":c.sequence.len(),"circular":c.circular})).collect::<Vec<_>>(),
-        "selected_candidate":selected_id.map(|id|format!("candidate_{}",id+1)),"selection_rule":"one circular candidate at least k bases, with gapped read-supported coverage and closure; graph k-mer mass is diagnostic, other small components retained without global veto", "selected_component_support_fraction":component_fraction,
+        "selected_candidate":selected_id.map(|id|format!("candidate_{}",id+1)),"selection_rule":"one circular candidate at least k bases, no unresolved collapsed alternatives in its raw graph component, with gapped read-supported coverage and closure; graph k-mer mass is diagnostic, other small components retained without global veto", "selected_component_support_fraction":component_fraction,
         "candidate_count_before_paired_paths":threaded.candidates.len(),
         "recruitment":recruitment,"validation":validation,"origin":"lexicographically minimal cyclic rotation across both strands",
         "limitations":["local error cleanup can remove low-frequency biological alleles; this is a primary-consensus assembler, not a heteroplasmy caller","no repeat-copy-number guessing, scaffolding, annotation or reference repair","complete means this graph and gapped-read support criteria passed; mitochondrial identity requires independent annotation"],
@@ -751,5 +839,121 @@ mod tests {
                 .unwrap();
             assert_eq!(min_rotation(sequence), expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+
+    fn dna(n: usize) -> Vec<u8> {
+        let mut state = 872398u64;
+        (0..n)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                b"ACGT"[(state >> 32) as usize & 3]
+            })
+            .collect()
+    }
+
+    fn counts(sequences: &[(&[u8], u32)], k: usize) -> HashMap<graph_kmer::Code, u32> {
+        let mut result = HashMap::new();
+        for &(s, n) in sequences {
+            graph_kmer::visit(s, None, k, 0, |_, c| {
+                *result.entry(graph_kmer::canonical(c, k)).or_default() += n;
+            });
+        }
+        result
+    }
+
+    #[test]
+    fn wider_bubbles_use_mean_support_and_preserve_balanced_alternatives() {
+        let major = dna(650);
+        let mut minor = major.clone();
+        for i in [200, 220, 240, 260, 280] {
+            minor[i] = if minor[i] == b'A' { b'C' } else { b'A' };
+        }
+        let k = 63;
+        let expected = counts(&[(&major, 1)], k);
+        let mut input = counts(&[(&major, 100), (&minor, 15)], k);
+        // One locally inflated minor k-mer must not dominate whole-arm support.
+        graph_kmer::visit(&minor[220..220 + k], None, k, 0, |_, c| {
+            input.insert(graph_kmer::canonical(c, k), 35);
+        });
+        let (mut edges, _, _) = graph(&input, k, 3);
+        let (_, branches, stats, _) = simplify(&mut edges, k, 0.2, 0.49);
+        assert_eq!(branches, 0);
+        assert!(stats["bubble_kmers_removed"].as_u64().unwrap() > 126);
+        let actual: HashSet<_> = edges
+            .iter()
+            .map(|e| graph_kmer::canonical(e.code, k))
+            .collect();
+        assert_eq!(actual, expected.keys().copied().collect());
+        let reversed = counts(
+            &[
+                (&kmer::reverse_complement(&major), 100),
+                (&kmer::reverse_complement(&minor), 15),
+            ],
+            k,
+        );
+        let (mut reverse_edges, _, _) = graph(&reversed, k, 3);
+        simplify(&mut reverse_edges, k, 0.2, 0.49);
+        assert_eq!(
+            actual,
+            reverse_edges
+                .iter()
+                .map(|e| graph_kmer::canonical(e.code, k))
+                .collect()
+        );
+        let balanced = counts(&[(&major, 100), (&minor, 100)], k);
+        let (mut edges, _, _) = graph(&balanced, k, 3);
+        let (_, branches, _, _) = simplify(&mut edges, k, 0.2, 0.49);
+        assert!(branches > 0);
+        assert!(edges
+            .iter()
+            .any(|e| !expected.contains_key(&graph_kmer::canonical(e.code, k))));
+    }
+
+    #[test]
+    fn high_coverage_self_loop_cannot_inflate_a_bubble_alternative() {
+        let k = 3;
+        let make = |s: &[u8], mean_count: f64| {
+            let mut codes = Vec::new();
+            graph_kmer::visit(s, None, k, 0, |_, c| codes.push(c));
+            Unitig {
+                from: codes[0].prefix(),
+                to: codes.last().unwrap().suffix(k - 1),
+                sequence: s.to_vec(),
+                circular: false,
+                mean_count,
+                max_count: mean_count as u32,
+                min_count: mean_count as u32,
+                first_count: mean_count as u32,
+                last_count: mean_count as u32,
+            }
+        };
+        let unitigs = vec![
+            make(b"AAGCC", 10.0),
+            make(b"AAT", 10.0),
+            make(b"ATAT", 1000.0),
+            make(b"ATCC", 10.0),
+        ];
+        let mut starts = HashMap::<_, Vec<_>>::new();
+        for (id, u) in unitigs.iter().enumerate() {
+            starts.entry(u.from).or_default().push(id);
+        }
+        assert!(stronger_bubble_path(0, &unitigs, &starts, &HashSet::new(), k, 0.2).is_none());
+    }
+
+    #[test]
+    fn wide_bubble_cleanup_does_not_choose_large_deletions() {
+        let major = dna(650);
+        let short = [&major[..200], &major[300..]].concat();
+        let input = counts(&[(&major, 100), (&short, 15)], 63);
+        let (mut edges, _, _) = graph(&input, 63, 3);
+        let (_, _, stats, _) = simplify(&mut edges, 63, 0.2, 0.49);
+        assert_eq!(stats["bubble_kmers_removed"], 0);
     }
 }

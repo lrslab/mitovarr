@@ -87,7 +87,9 @@ Options:
       --min-kmer-count <MIN_KMER_COUNT>
           Minimum pair-record support for a retained kmer (mates counted once) [default: 3]
       --max-error-fraction <MAX_ERROR_FRACTION>
-          Maximum weak/strong support ratio for graph cleanup and repeat routes; 0 disables cleanup [default: 0.2]
+          Maximum weak/strong support ratio for tips, weak links and repeat routes; 0 disables all cleanup [default: 0.2]
+      --max-bubble-fraction <MAX_BUBBLE_FRACTION>
+          Maximum weak/strong mean coverage ratio for bounded local bubbles; does not relax repeat routes [default: 0.49]
       --min-depth <MIN_DEPTH>
           Minimum quality-filtered matching-base fragment depth after gapped validation [default: 10]
       --min-junction-fragments <MIN_JUNCTION_FRAGMENTS>
@@ -121,7 +123,9 @@ Options:
       --min-kmer-count <MIN_KMER_COUNT>
           Minimum pair-record support for a retained kmer (mates counted once) [default: 3]
       --max-error-fraction <MAX_ERROR_FRACTION>
-          Maximum weak/strong support ratio for graph cleanup and repeat routes; 0 disables cleanup [default: 0.2]
+          Maximum weak/strong support ratio for tips, weak links and repeat routes; 0 disables all cleanup [default: 0.2]
+      --max-bubble-fraction <MAX_BUBBLE_FRACTION>
+          Maximum weak/strong mean coverage ratio for bounded local bubbles; does not relax repeat routes [default: 0.49]
       --min-depth <MIN_DEPTH>
           Minimum quality-filtered matching-base fragment depth after gapped validation [default: 10]
       --min-junction-fragments <MIN_JUNCTION_FRAGMENTS>
@@ -155,7 +159,9 @@ Options:
       --min-kmer-count <MIN_KMER_COUNT>
           Minimum pair-record support for a retained kmer (mates counted once) [default: 3]
       --max-error-fraction <MAX_ERROR_FRACTION>
-          Maximum weak/strong support ratio for graph cleanup and repeat routes; 0 disables cleanup [default: 0.2]
+          Maximum weak/strong support ratio for tips, weak links and repeat routes; 0 disables all cleanup [default: 0.2]
+      --max-bubble-fraction <MAX_BUBBLE_FRACTION>
+          Maximum weak/strong mean coverage ratio for bounded local bubbles; does not relax repeat routes [default: 0.49]
       --min-depth <MIN_DEPTH>
           Minimum quality-filtered matching-base fragment depth after gapped validation [default: 10]
       --min-junction-fragments <MIN_JUNCTION_FRAGMENTS>

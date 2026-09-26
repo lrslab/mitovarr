@@ -4,12 +4,19 @@
 
 ### Package and interfaces
 
+- Remove navigation links to the retired Chinese README; keep the Chinese annotation guide.
 - Exclude local AI-assistant files, TODOs, maintainer notes and exploratory-test directories from Git; limit the source package to runtime code, active regression tests and user documentation.
 - Rename the package, library, executable and launcher to `mitovarr`. Preserve existing `mitovar-rust.*` JSON schema identifiers and gene panels; use `mitovarr` as the GFF3 source.
 - Provide an independently buildable Rust package, English and Chinese usage guides, CLI documentation, method descriptions and editable workflow Figure 1. Keep experiment records and analysis outputs outside the repository and source package.
 - Remove unused legacy pileup, variant-refresh and repeat-summary helpers and redundant tests; retain coverage through the production fragment accumulator and portable regression fixtures.
 
 ### Assembly and consensus
+
+- Preserve complete flank context during smaller-k mapping traversal so repeated short flank sequences do not discard supported paths; retain graph-edge support checks and search limits.
+- Preserve permissively collapsed bubble alternatives and block final publication in their original graph component; prevent mixtures from becoming falsely unique through cleanup while retaining longer primary sequences.
+
+- Compare bounded de novo bubbles using whole-path mean support and longer local alternatives, with independent `--max-bubble-fraction` (default 0.49); retain strict repeat-route thresholds.
+- Add pooled k=21/15 sample-graph fallback proposals for mapping windows with no main-k path, preserving complete original flanks, search limits and paired-fragment replacement gates.
 
 - Prevent local contractions from being published on separate repeat-internal junction evidence alone; require three named fragments linking unique unchanged flanks and report this evidence explicitly.
 
