@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "mitovarr",
     version,
-    about = "Native Rust mtDNA assembly, consensus, gene prediction and tRNA-Pro rotation"
+    about = "Native Rust mtDNA de novo and mapping assembly, annotation and tRNA-Pro rotation"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -18,16 +18,17 @@ pub enum Commands {
     FetchCaendr(FetchCaendrArgs),
     /// Iteratively recruit original complete read pairs with seed kmers.
     Bait(BaitArgs),
-    /// Reference-blind graph assembly from original paired FASTQ only.
+    /// Compatibility entry for direct assembly of original pairs without recruitment.
+    #[command(hide = true)]
     AssembleDenovo(AssemblyArgs),
-    /// Assemble BAM-extracted paired FASTQ directly; extraction is the baiting step.
+    /// BAM-baited de novo assembly from extracted pairs; no second recruitment.
     AssembleBaited(AssemblyArgs),
-    /// Recruit with a seed, then assemble sample reads only; validate on all originals.
+    /// Seeded de novo assembly; seed recruits reads only, validation uses all originals.
     AssembleSeeded(SeededArgs),
-    /// Consensus from an existing coordinate-sorted indexed BAM and reference.
-    #[command(alias = "assemble-mapping")]
-    Polish(PolishArgs),
-    /// Predict mitochondrial genes on frozen candidates; optionally normalize at tRNA-Pro.
+    /// Mapping assembly from a reference and indexed BAM, with optional local reconstruction.
+    #[command(alias = "polish")]
+    AssembleMapping(MappingArgs),
+    /// Predict and assess genes on frozen candidates independently of NCR1 completeness.
     Annotate(AnnotationArgs),
 }
 
@@ -63,7 +64,7 @@ pub struct AnnotationArgs {
     /// Orient a circular input so its unique, complete tRNA-Pro starts at base 1 on +.
     #[arg(long)]
     pub rotate_to_trna_pro: bool,
-    /// Project primary_ambiguity.tsv or structural_ambiguity.tsv from matching FASTA coordinates.
+    /// Project assembly ambiguity intervals from matching FASTA coordinates.
     #[arg(long)]
     pub assembly_ambiguity: Option<PathBuf>,
     /// Minimum intergenic length for NCR intervals; shorter named loci remain in ncr_loci.tsv.
@@ -133,7 +134,8 @@ pub struct Limits {
     /// Hard limit on distinct kmers in each recruitment or assembly set.
     #[arg(long, default_value_t = 2_000_000)]
     pub max_kmers: usize,
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u8).range(0..=93))]
+    /// Optional hard base-quality cutoff; 0 disables it. Qualities still inform read scores.
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=93))]
     pub min_baseq: u8,
 }
 
@@ -153,6 +155,12 @@ pub struct BaitArgs {
 
 #[derive(Debug, Clone, Args)]
 pub struct GraphSettings {
+    /// Also propose a coverage-fitted circular layout from sample graph paths; never certifies a final assembly.
+    #[arg(long)]
+    pub coverage_layout: bool,
+    /// Add cross-k layout proposals and read-context-guided walks; hypotheses remain unverified.
+    #[arg(long, requires = "coverage_layout")]
+    pub multi_k_layout: bool,
     /// Main odd k in 15..127; smaller k=47/31 graphs also propose open-end connections.
     #[arg(long, default_value_t = 63, value_parser = parse_graph_k)]
     pub k: usize,
@@ -165,7 +173,7 @@ pub struct GraphSettings {
     /// Maximum weak/strong mean coverage ratio for bounded local bubbles; does not relax repeat routes.
     #[arg(long, default_value_t = 0.49)]
     pub max_bubble_fraction: f64,
-    /// Minimum quality-filtered matching-base fragment depth after gapped validation.
+    /// Minimum matching-base fragment depth after gapped validation.
     #[arg(long, default_value_t = 10)]
     pub min_depth: u32,
     /// Minimum named fragments supporting each repeat bridge and the output junction.
@@ -199,10 +207,22 @@ pub struct SeededArgs {
 }
 
 #[derive(Debug, Clone, Args)]
-pub struct PolishArgs {
-    /// Reassemble suspect regions from paired FASTQ and compare whole-contig structures.
+pub struct MappingArgs {
+    /// Build a sample graph from paired FASTQ and output a fast consensus with unresolved regions.
     #[arg(long, requires_all = ["r1", "r2"])]
     pub local_assembly: bool,
+    /// Enumerate local structures and compute complete paired-fragment scores (slower; opt-in).
+    #[arg(long, requires = "local_assembly")]
+    pub deep_validation: bool,
+    /// Retain a usable consensus even if structure remains unresolved; enabled by default in fast local mode.
+    #[arg(long, alias = "legacy-bridge", requires = "local_assembly")]
+    pub best_effort: bool,
+    /// Infer separate coverage-guided local layouts; bounded candidates never certify final structure.
+    #[arg(long, requires = "deep_validation")]
+    pub coverage_layout: bool,
+    /// Add cross-k local layout proposals with long flanks and shared read scoring.
+    #[arg(long, requires = "coverage_layout")]
+    pub multi_k_layout: bool,
     /// Complete paired reads for local assembly (e.g. the matching fetch-caendr FASTQ).
     #[arg(long, requires_all = ["r2", "local_assembly"])]
     pub r1: Option<PathBuf>,
@@ -217,6 +237,9 @@ pub struct PolishArgs {
     /// Maximum local paths; reaching a search limit leaves the window unresolved.
     #[arg(long, default_value_t = 128)]
     pub local_max_paths: usize,
+    /// Worker threads for deep validation; results keep input order. Capped by available CPUs.
+    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=64))]
+    pub scoring_threads: u16,
     #[arg(long = "ref")]
     pub reference: PathBuf,
     #[arg(long)]
@@ -227,7 +250,8 @@ pub struct PolishArgs {
     pub out: PathBuf,
     #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u8).range(0..=60))]
     pub min_mapq: u8,
-    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u8).range(0..=93))]
+    /// Optional hard base-quality cutoff; 0 disables it. Quality-weighted voting and scoring remain.
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=93))]
     pub min_baseq: u8,
     #[arg(long, default_value_t = 10)]
     pub min_depth: u32,

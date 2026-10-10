@@ -134,6 +134,125 @@ fn equivalent_circle(a: &[u8], b: &[u8]) -> bool {
 }
 
 #[test]
+fn default_assembly_keeps_supported_kmers_below_q20_with_explicit_filter_opt_in() {
+    let dir = Fixture::new();
+    let genome = dna(600, 9123);
+    write_reads(&dir, &circle_reads(&genome), false);
+    for mate in [1, 2] {
+        let path = dir.path(&format!("r{mate}.fq"));
+        let text = fs::read_to_string(&path).unwrap();
+        let changed = text
+            .lines()
+            .enumerate()
+            .map(|(i, line)| {
+                if i % 4 == 3 {
+                    "4".repeat(line.len())
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(path, changed + "\n").unwrap(); // Q19 throughout both mates.
+    }
+    for command in ["assemble-denovo", "assemble-baited"] {
+        assert!(assembly(&dir, command, command, &[]));
+        let result = report(&dir, command);
+        assert_eq!(result["parameters"]["min_baseq"], 0);
+        let sequence =
+            load_reference(&dir.path(&format!("{command}/consensus.fasta")), None).unwrap();
+        assert!(equivalent_circle(&genome, &sequence.sequence));
+    }
+    assert!(!assembly(
+        &dir,
+        "assemble-denovo",
+        "q20",
+        &["--min-baseq", "20"]
+    ));
+    assert_eq!(report(&dir, "q20")["reason"], "no_supported_kmers");
+    assert!(!dir.path("q20/consensus.fasta").exists());
+    let unavailable = report(&dir, "q20")["best_circular"].clone();
+    assert_eq!(unavailable["status"], "unavailable");
+    assert!(unavailable["file"].is_null());
+    assert!(unavailable["ambiguity_file"].is_null());
+    assert!(unavailable["source"].is_null());
+    assert_eq!(unavailable["eligible_representative_count"], 0);
+    assert!(!dir.path("q20/best_circular.fasta").exists());
+    assert!(!dir.path("q20/best_circular_ambiguity.tsv").exists());
+}
+
+#[test]
+fn coverage_layout_is_explicit_reproducible_and_cannot_publish_an_unbridged_repeat() {
+    let dir = Fixture::new();
+    let genome = [dna(1100, 172839), b"AT".repeat(90)].concat();
+    let mut reads: Vec<_> = circle_reads(&genome).into_iter().step_by(5).collect();
+    write_reads(&dir, &reads, false);
+    assert!(!assembly(
+        &dir,
+        "assemble-denovo",
+        "layout",
+        &["--coverage-layout"]
+    ));
+    let result = report(&dir, "layout");
+    assert_eq!(
+        result["coverage_layout"]["status"],
+        "coverage_inferred_layout"
+    );
+    assert_eq!(result["coverage_layout"]["final_verified"], false);
+    assert_eq!(
+        result["coverage_layout"]["structural_uniqueness_claim"],
+        false
+    );
+    assert!(!dir.path("layout/consensus.fasta").exists());
+    let selected = load_reference(&dir.path("layout/coverage_layout.fasta"), None).unwrap();
+    assert!(equivalent_circle(&selected.sequence, &genome));
+    reads.reverse();
+    write_reads(&dir, &reads, true);
+    assert!(!assembly(
+        &dir,
+        "assemble-baited",
+        "reordered",
+        &["--coverage-layout"]
+    ));
+    assert_eq!(
+        fs::read(dir.path("layout/coverage_layout.fasta")).unwrap(),
+        fs::read(dir.path("reordered/coverage_layout.fasta")).unwrap()
+    );
+    assert_eq!(
+        report(&dir, "reordered")["validation_scope"],
+        "mt-bam-extracted"
+    );
+    assert!(!assembly(
+        &dir,
+        "assemble-baited",
+        "multik",
+        &["--coverage-layout", "--multi-k-layout"]
+    ));
+    let multi = report(&dir, "multik");
+    assert_eq!(multi["coverage_layout"]["multi_k_layout"]["enabled"], true);
+    let searches = multi["coverage_layout"]["searches"].as_array().unwrap();
+    assert!(searches
+        .iter()
+        .any(|s| s["method"] == "long_flanks_cross_k_read_context" && s["k"] == 21));
+    assert!(searches
+        .iter()
+        .any(|s| s["k"] == 127 && s["status"] == "insufficient_read_or_flank_context"));
+    let sequences = |name: &str| {
+        let mut reader = noodles_fasta::io::Reader::new(std::io::BufReader::new(
+            fs::File::open(dir.path(name)).unwrap(),
+        ));
+        reader
+            .records()
+            .map(|r| r.unwrap().sequence().as_ref().to_vec())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let candidates = sequences("multik/coverage_layout_candidates.fasta");
+    assert!(candidates.iter().any(|s| equivalent_circle(s, &genome)));
+    assert!(sequences("layout/coverage_layout_candidates.fasta").is_subset(&candidates));
+    assert!(!dir.path("multik/consensus.fasta").exists());
+}
+
+#[test]
 fn circle_gzip_order_independent_and_no_external_runtime() {
     let dir = Fixture::new();
     let genome = dna(600, 9123);
@@ -144,7 +263,33 @@ fn circle_gzip_order_independent_and_no_external_runtime() {
     assert!(equivalent_circle(&genome, &consensus.sequence));
     let primary = load_reference(&dir.path("first/primary.fasta"), None).unwrap();
     assert_eq!(primary.sequence, consensus.sequence);
-    assert_eq!(report(&dir, "first")["primary"]["final_verified"], true);
+    let first = report(&dir, "first");
+    assert_eq!(first["primary"]["final_verified"], true);
+    let best = &first["best_circular"];
+    assert_eq!(best["status"], "selected");
+    assert_eq!(best["file"], "best_circular.fasta");
+    assert_eq!(best["ambiguity_file"], "best_circular_ambiguity.tsv");
+    assert_eq!(best["length"], genome.len());
+    assert_eq!(best["circular"], true);
+    assert_eq!(best["final_verified"], true);
+    assert_eq!(best["eligible_representative_count"], 1);
+    assert_eq!(best["structural_uniqueness_claim"], false);
+    assert_eq!(best["source"], first["primary"]["source"]);
+    assert_eq!(
+        best["uncertainty_intervals"],
+        first["primary"]["uncertainty_intervals"]
+    );
+    let best_sequence = load_reference(&dir.path("first/best_circular.fasta"), None).unwrap();
+    assert_eq!(best_sequence.sequence, consensus.sequence);
+    let best_fasta = fs::read_to_string(dir.path("first/best_circular.fasta")).unwrap();
+    assert_eq!(
+        best_fasta.lines().next().unwrap(),
+        ">best_circular circular=true length=600 final_verified=true"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path("first/best_circular_ambiguity.tsv")).unwrap(),
+        "sequence\tstart\tend\tevidence\treason\talternatives\n"
+    );
     let original = fs::read(dir.path("first/consensus.fasta")).unwrap();
     reads.reverse();
     write_reads(&dir, &reads, false);
@@ -158,6 +303,11 @@ fn circle_gzip_order_independent_and_no_external_runtime() {
         fs::read(dir.path("first/primary.fasta")).unwrap(),
         fs::read(dir.path("second/primary.fasta")).unwrap()
     );
+    assert_eq!(
+        best_fasta,
+        fs::read_to_string(dir.path("second/best_circular.fasta")).unwrap()
+    );
+    assert_eq!(best, &report(&dir, "second")["best_circular"]);
     assert_eq!(report(&dir, "first")["validation"]["scan"]["pairs"], 600);
     assert!(assembly(&dir, "assemble-baited", "bam_baited", &[]));
     assert_eq!(
@@ -169,6 +319,11 @@ fn circle_gzip_order_independent_and_no_external_runtime() {
     assert_eq!(baited["input_scope"], "mt-bam-extracted");
     assert_eq!(baited["validation_scope"], "mt-bam-extracted");
     assert!(baited["recruitment"].is_null());
+    assert_eq!(best, &baited["best_circular"]);
+    assert_eq!(
+        best_fasta,
+        fs::read_to_string(dir.path("bam_baited/best_circular.fasta")).unwrap()
+    );
     // The only executable started by this test is our own binary, with no tools on PATH.
     let status = std::process::Command::new(env!("CARGO_BIN_EXE_mitovarr"))
         .env("PATH", dir.path("no-programs"))
@@ -702,30 +857,30 @@ fn indexed_bam_consensus_and_refusal_to_overwrite() {
     write_bam(&dir.path("input.bam"), &genome, None);
     let args = vec![
         "mitovarr".into(),
-        "polish".into(),
+        "assemble-mapping".into(),
         "--ref".into(),
         dir.path("reference.fa").display().to_string(),
         "--bam".into(),
         dir.path("input.bam").display().to_string(),
         "--out".into(),
-        dir.path("polished").display().to_string(),
+        dir.path("mapping").display().to_string(),
         "--emit-coverage".into(),
         "--emit-variants".into(),
     ];
     assert!(run(Cli::try_parse_from(&args).unwrap()).unwrap());
     assert_eq!(
-        load_reference(&dir.path("polished/consensus.fasta"), None)
+        load_reference(&dir.path("mapping/consensus.fasta"), None)
             .unwrap()
             .sequence,
         genome
     );
-    let before = fs::read(dir.path("polished/consensus.fasta")).unwrap();
+    let before = fs::read(dir.path("mapping/consensus.fasta")).unwrap();
     assert!(run(Cli::try_parse_from(&args).unwrap()).is_err());
     assert_eq!(
         before,
-        fs::read(dir.path("polished/consensus.fasta")).unwrap()
+        fs::read(dir.path("mapping/consensus.fasta")).unwrap()
     );
-    assert_eq!(report(&dir, "polished")["circularity_verified"], false);
+    assert_eq!(report(&dir, "mapping")["circularity_verified"], false);
 }
 
 #[test]
@@ -750,7 +905,7 @@ fn mapping_majority_reports_both_alleles_and_legacy_threshold_remains_available(
     ] {
         let mut args = vec![
             "mitovarr".to_owned(),
-            "polish".into(),
+            "assemble-mapping".into(),
             "--ref".into(),
             dir.path("reference.fa").display().to_string(),
             "--bam".into(),
@@ -850,6 +1005,9 @@ fn four_haplotype_mixture_does_not_publish_sequence_created_by_bubble_cleanup() 
     let result = report(&dir, "mixture");
     assert_eq!(result["primary"]["final_verified"], false);
     assert_eq!(result["reason"], "supported_bubble_alternatives");
+    assert_eq!(result["sequence_output"]["status"], "partial_available");
+    assert_eq!(result["sequence_output"]["gene_quality"], "not_assessed");
+    assert_eq!(result["final_published"], false);
     assert!(result["validation"]["passed"].as_bool().unwrap());
     assert_eq!(
         result["graph_simplification"]["retained_bubble_alternatives"]
@@ -860,6 +1018,31 @@ fn four_haplotype_mixture_does_not_publish_sequence_created_by_bubble_cleanup() 
     );
     let primary = load_reference(&dir.path("mixture/primary.fasta"), None).unwrap();
     assert!(equivalent_circle(&base, &primary.sequence));
+    let best = &result["best_circular"];
+    assert_eq!(best["status"], "selected");
+    assert_eq!(best["circular"], true);
+    assert_eq!(best["final_verified"], false);
+    assert!(best["eligible_representative_count"].as_u64().unwrap() > 0);
+    assert_eq!(best["structural_uniqueness_claim"], false);
+    assert_eq!(best["source"], result["primary"]["source"]);
+    assert_eq!(
+        best["uncertainty_intervals"],
+        result["primary"]["uncertainty_intervals"]
+    );
+    assert!(!best["uncertainty_intervals"].as_array().unwrap().is_empty());
+    let best_sequence = load_reference(&dir.path("mixture/best_circular.fasta"), None).unwrap();
+    assert_eq!(best_sequence.sequence, primary.sequence);
+    let best_fasta = fs::read_to_string(dir.path("mixture/best_circular.fasta")).unwrap();
+    assert_eq!(
+        best_fasta.lines().next().unwrap(),
+        ">best_circular circular=true length=1800 final_verified=false"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path("mixture/best_circular_ambiguity.tsv")).unwrap(),
+        fs::read_to_string(dir.path("mixture/primary_ambiguity.tsv"))
+            .unwrap()
+            .replace("primary\t", "best_circular\t")
+    );
     assert!(dir.path("mixture/bubble_alternatives.fasta").exists());
     assert!(
         fs::read_to_string(dir.path("mixture/primary_ambiguity.tsv"))

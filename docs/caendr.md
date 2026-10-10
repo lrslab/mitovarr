@@ -2,7 +2,7 @@
 
 固定入口是包内的 [`scripts/fetch_caendr.sh`](../scripts/fetch_caendr.sh)，提取实现是 [`src/caendr.rs`](../src/caendr.rs)。两者都随 Cargo 源代码包发布。
 
-脚本仅使用 POSIX shell 启动本包的 `mitovarr fetch-caendr`，通过脚本位置定位 `Cargo.toml`。Cargo 首次构建 release 程序，后续复用编译结果；`--locked` 使用随包保存的依赖锁文件。脚本需要 Cargo/Rust 工具链，所有命令参数原样传给 Rust 程序，退出状态也原样传回。
+脚本仅使用 POSIX shell 启动本包的 `mitovarr fetch-caendr`。在二进制 release 安装包中，它直接运行包根目录的 `mitovarr`，无需 Cargo/Rust。在源代码包中，它通过脚本位置定位 `Cargo.toml`，由 Cargo 首次构建 release 程序，后续复用编译结果；`--locked` 使用随包保存的依赖锁文件。所有命令参数原样传给 Rust 程序，退出状态也原样传回。
 
 BAM 索引查询、HTTP Range 请求、mate 恢复、gzip FASTQ 和 BAM 输出均由 Rust 实现，不依赖 samtools、SPAdes、Python 或系统 gzip。Rust 程序本身不启动 shell 或其他外部程序。
 

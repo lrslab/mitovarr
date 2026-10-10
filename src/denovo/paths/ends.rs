@@ -8,11 +8,52 @@ use std::{
 };
 
 type Bridge = (usize, usize, Vec<u8>);
+const MAX_ENDPOINT_PAIRS: usize = 10_000;
 
+struct SearchGraph<'a> {
+    outgoing: &'a HashMap<kmer::Code, Vec<(kmer::Code, u8)>>,
+    reaches_target: HashSet<kmer::Code>,
+}
+
+impl<'a> SearchGraph<'a> {
+    fn new(
+        outgoing: &'a HashMap<kmer::Code, Vec<(kmer::Code, u8)>>,
+        targets: &HashMap<kmer::Code, Vec<usize>>,
+        k: usize,
+    ) -> Self {
+        // Reverse reachability is an over-approximation: the exact main-k
+        // target flank is still checked when a walk arrives. A node with no
+        // route to even the target's small-k suffix cannot spell a connector.
+        // Derive its four possible predecessors instead of duplicating all
+        // edges in another adjacency map.
+        let mut reaches_target: HashSet<_> = targets.keys().copied().collect();
+        let mut pending: Vec<_> = reaches_target.iter().copied().collect();
+        while let Some(node) = pending.pop() {
+            for base in 0..4u128 {
+                let predecessor = (base << (2 * (k - 2))) | (node >> 2);
+                if outgoing
+                    .get(&predecessor)
+                    .is_some_and(|edges| edges.iter().any(|&(next, _)| next == node))
+                    && reaches_target.insert(predecessor)
+                {
+                    pending.push(predecessor);
+                }
+            }
+        }
+        Self {
+            outgoing,
+            reaches_target,
+        }
+    }
+}
+
+#[derive(Default)]
 struct Search {
     bridges: BTreeSet<Bridge>,
     states: usize,
     limited: bool,
+    unreachable_branches_pruned: usize,
+    limit_reasons: BTreeSet<&'static str>,
 }
 
 fn code(sequence: &[u8]) -> kmer::Code {
@@ -21,54 +62,112 @@ fn code(sequence: &[u8]) -> kmer::Code {
     result
 }
 
+#[derive(Clone, Copy)]
+struct SearchLimits {
+    k: usize,
+    overlap: usize,
+    max_bases: usize,
+    max_states: usize,
+    max_paths: usize,
+}
+
+fn target_budget(reachable_targets: usize) -> (usize, usize) {
+    if reachable_targets == 0 {
+        (0, 0)
+    } else {
+        (
+            MAX_STATES / reachable_targets,
+            MAX_PATHS / reachable_targets,
+        )
+    }
+}
+
+impl Search {
+    fn mark_limit(&mut self, reason: &'static str) {
+        self.limited = true;
+        self.limit_reasons.insert(reason);
+    }
+}
+
 fn search(
     from: usize,
     graph: &PathGraph,
     targets: &HashMap<kmer::Code, Vec<usize>>,
-    outgoing: &HashMap<kmer::Code, Vec<(kmer::Code, u8)>>,
-    k: usize,
-    overlap: usize,
-    max_bases: usize,
+    all_targets: &HashMap<kmer::Code, Vec<usize>>,
+    small_graph: &SearchGraph<'_>,
+    limits: SearchLimits,
 ) -> Search {
+    let SearchLimits {
+        k,
+        overlap,
+        max_bases,
+        max_states,
+        max_paths,
+    } = limits;
     let source = &graph.segments[from].sequence;
     let initial = source[source.len() - overlap..].to_vec();
     let start = code(&source[source.len() - k + 1..]);
+    let mut result = Search::default();
+    if !small_graph.reaches_target.contains(&start) {
+        result.unreachable_branches_pruned = 1;
+        return result;
+    }
+    if max_states == 0 {
+        result.mark_limit("target_state_budget");
+    }
+    if max_paths == 0 {
+        result.mark_limit("target_candidate_budget");
+    }
+    if result.limited {
+        return result;
+    }
     let mut stack = vec![(start, initial)];
-    let mut result = Search {
-        bridges: BTreeSet::new(),
-        states: 0,
-        limited: false,
-    };
     while let Some((node, sequence)) = stack.pop() {
-        result.states += 1;
-        if result.states > MAX_STATES {
-            result.limited = true;
+        if !small_graph.reaches_target.contains(&node) {
+            result.unreachable_branches_pruned += 1;
+            continue;
+        }
+        if result.states == max_states {
+            result.mark_limit("target_state_budget");
             break;
         }
-        let mut arrived = false;
-        if sequence.len() > overlap {
+        result.states += 1;
+        let arrived = sequence.len() > overlap
+            && all_targets.get(&node).is_some_and(|ids| {
+                ids.iter()
+                    .any(|&to| sequence.ends_with(&graph.segments[to].sequence[..overlap]))
+            });
+        if arrived {
+            // A corridor still stops at the FIRST full graph endpoint, even
+            // when this search is collecting a different target. Splitting
+            // budgets must not introduce walks through intervening anchors.
             if let Some(ids) = targets.get(&node) {
                 for &to in ids {
                     if sequence.ends_with(&graph.segments[to].sequence[..overlap]) {
                         result.bridges.insert((from, to, sequence.clone()));
-                        arrived = true;
                     }
                 }
             }
-        }
-        if arrived {
-            if result.bridges.len() >= MAX_PATHS && !stack.is_empty() {
-                result.limited = true;
+            if result.bridges.len() >= max_paths && !stack.is_empty() {
+                result.mark_limit("target_candidate_budget");
                 break;
             }
             continue;
         }
-        if let Some(next) = outgoing.get(&node) {
-            if sequence.len() - overlap >= max_bases {
-                result.limited = true;
+        if let Some(next) = small_graph.outgoing.get(&node) {
+            let next: Vec<_> = next
+                .iter()
+                .filter(|(to, _)| small_graph.reaches_target.contains(to))
+                .collect();
+            result.unreachable_branches_pruned += small_graph.outgoing[&node].len() - next.len();
+            if next.is_empty() {
                 continue;
             }
-            for &(to, base) in next.iter().rev() {
+            if sequence.len() - overlap >= max_bases {
+                result.mark_limit("maximum_added_bases");
+                continue;
+            }
+            for &&(to, base) in next.iter().rev() {
                 let mut extended = sequence.clone();
                 extended.push(base);
                 stack.push((to, extended));
@@ -76,6 +175,77 @@ fn search(
         }
     }
     result
+}
+
+fn reachable_segments(graph: &PathGraph, start: usize) -> HashSet<usize> {
+    let mut seen = HashSet::from([start]);
+    let mut pending = vec![start];
+    while let Some(id) = pending.pop() {
+        for &next in &graph.outgoing[id] {
+            if seen.insert(next) {
+                pending.push(next);
+            }
+        }
+    }
+    seen
+}
+
+fn connection_role(
+    from: usize,
+    to: usize,
+    reverse_segments: &[Vec<usize>],
+    target_reaches_source: bool,
+) -> &'static str {
+    if reverse_segments[from].contains(&to) {
+        "same_end_reverse_complement"
+    } else if target_reaches_source {
+        "backbone_closure"
+    } else {
+        "other_end_connection"
+    }
+}
+
+struct Admission {
+    eligible: bool,
+    reason: &'static str,
+}
+
+fn admission(
+    bridge: &Bridge,
+    proposed: &BTreeMap<Bridge, BTreeSet<usize>>,
+    limited_sources: &BTreeSet<usize>,
+    reverse_segments: &[Vec<usize>],
+) -> Admission {
+    let (from, to, sequence) = bridge;
+    if limited_sources.contains(from) {
+        return Admission {
+            eligible: false,
+            reason: "source_competing_search_incomplete",
+        };
+    }
+    let reverse = kmer::reverse_complement(sequence);
+    let mut limited_reciprocal = false;
+    for &a in &reverse_segments[*to] {
+        // Absence of a spelling in a capped reciprocal search is unknown,
+        // not evidence that the reciprocal spelling is missing.
+        limited_reciprocal |= limited_sources.contains(&a);
+        for &b in &reverse_segments[*from] {
+            if !limited_sources.contains(&a) && proposed.contains_key(&(a, b, reverse.clone())) {
+                return Admission {
+                    eligible: true,
+                    reason: "retained_for_fragment_scoring",
+                };
+            }
+        }
+    }
+    Admission {
+        eligible: false,
+        reason: if limited_reciprocal {
+            "reciprocal_competing_search_incomplete"
+        } else {
+            "reciprocal_spelling_missing"
+        },
+    }
 }
 
 pub(super) fn augment(
@@ -112,10 +282,53 @@ pub(super) fn augment(
         .collect();
     sources.sort_unstable();
     sinks.sort_unstable();
+    let small_ks: Vec<_> = [47, 31].into_iter().filter(|&k| k < settings.k).collect();
+    let endpoint_pairs = sources.len().checked_mul(sinks.len()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "end-search endpoint-pair metadata limit: source_ends={} target_ends={} endpoint_pairs=overflow maximum_endpoint_pairs={MAX_ENDPOINT_PAIRS}",
+            sources.len(), sinks.len()
+        )
+    })?;
+    ensure!(
+        small_ks.is_empty() || endpoint_pairs <= MAX_ENDPOINT_PAIRS,
+        "end-search endpoint-pair metadata limit: source_ends={} target_ends={} endpoint_pairs={endpoint_pairs} maximum_endpoint_pairs={MAX_ENDPOINT_PAIRS}",
+        sources.len(), sinks.len()
+    );
+    let mut by_sequence = HashMap::<_, Vec<_>>::new();
+    for (id, segment) in graph.segments.iter().enumerate() {
+        by_sequence
+            .entry(segment.sequence.clone())
+            .or_default()
+            .push(id);
+    }
+    let reverse_segments: Vec<_> = graph
+        .segments
+        .iter()
+        .map(|segment| {
+            by_sequence
+                .get(&kmer::reverse_complement(&segment.sequence))
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect();
+    let mut roles = BTreeMap::new();
+    if !small_ks.is_empty() {
+        for &to in &sinks {
+            let backbone = reachable_segments(graph, to);
+            for &from in &sources {
+                roles.insert(
+                    (from, to),
+                    connection_role(from, to, &reverse_segments, backbone.contains(&from)),
+                );
+            }
+        }
+    }
     let mut proposed = BTreeMap::<Bridge, BTreeSet<usize>>::new();
     let mut limited_sources = BTreeSet::new();
+    let mut limited_pairs = BTreeSet::new();
     let mut searches = Vec::new();
-    for small_k in [47, 31].into_iter().filter(|&k| k < settings.k) {
+    let mut target_searches = Vec::new();
+    for &small_k in &small_ks {
         if sources.is_empty() || sinks.is_empty() {
             break;
         }
@@ -169,53 +382,132 @@ pub(super) fn augment(
                 .or_default()
                 .push(to);
         }
-        for &from in &sources {
-            let result = search(
-                from, graph, &targets, &outgoing, small_k, overlap, max_bases,
-            );
-            searches.push(
-                json!({"k":small_k,"source_segment":from+1,"states":result.states,
-                "candidate_connections":result.bridges.len(),"search_limited":result.limited}),
-            );
-            if result.limited {
-                limited_sources.insert(from);
+        // One adjacency map and one target reachability set at a time. The
+        // first pass records only which sources can reach each target suffix;
+        // the second reuses each target's set across every source search.
+        // This avoids retaining a graph-sized set for every endpoint.
+        let mut plans = Vec::new();
+        let mut reachable_counts = HashMap::<usize, usize>::new();
+        for &to in &sinks {
+            let target = HashMap::from([(
+                code(&graph.segments[to].sequence[overlap - small_k + 1..overlap]),
+                vec![to],
+            )]);
+            let small_graph = SearchGraph::new(&outgoing, &target, small_k);
+            let reachable: HashSet<_> = sources
+                .iter()
+                .copied()
+                .filter(|&from| {
+                    let s = &graph.segments[from].sequence;
+                    small_graph
+                        .reaches_target
+                        .contains(&code(&s[s.len() - small_k + 1..]))
+                })
+                .collect();
+            for &from in &reachable {
+                *reachable_counts.entry(from).or_default() += 1;
             }
-            for bridge in result.bridges {
-                proposed.entry(bridge).or_default().insert(small_k);
+            plans.push((to, target, reachable));
+        }
+        let mut totals: BTreeMap<_, Search> = sources
+            .iter()
+            .map(|&from| (from, Search::default()))
+            .collect();
+        for (to, target, reachable) in plans {
+            let small_graph = if reachable.is_empty() {
+                None
+            } else {
+                Some(SearchGraph::new(&outgoing, &target, small_k))
+            };
+            for &from in &sources {
+                let count = reachable_counts.get(&from).copied().unwrap_or(0);
+                let suffix_reachable = reachable.contains(&from);
+                // Equal floor shares, without distributing the remainder by
+                // segment ID. Total traversal-state and candidate quotas
+                // never exceed the original per-source/per-k limits.
+                let (max_states, max_paths) =
+                    target_budget(if suffix_reachable { count } else { 0 });
+                let result = if suffix_reachable {
+                    search(
+                        from,
+                        graph,
+                        &target,
+                        &targets,
+                        small_graph.as_ref().expect("reachable target"),
+                        SearchLimits {
+                            k: small_k,
+                            overlap,
+                            max_bases,
+                            max_states,
+                            max_paths,
+                        },
+                    )
+                } else {
+                    Search {
+                        unreachable_branches_pruned: 1,
+                        ..Search::default()
+                    }
+                };
+                target_searches.push(json!({
+                    "k":small_k,"source_segment":from+1,"target_segment":to+1,
+                    "role":roles[&(from,to)],"target_suffix_reachable":suffix_reachable,
+                    "reachable_targets_for_source":count,"state_budget":max_states,"candidate_budget":max_paths,
+                    "states":result.states,"candidate_connections":result.bridges.len(),
+                    "status":if !suffix_reachable {"unreachable"} else if result.limited {"limited"} else {"complete"},
+                    "search_complete":!result.limited,"search_limited":result.limited,
+                    "limit_reasons":result.limit_reasons,"unreachable_branches_pruned":result.unreachable_branches_pruned,
+                }));
+                let total = totals.get_mut(&from).expect("source summary");
+                total.states += result.states;
+                total.unreachable_branches_pruned += result.unreachable_branches_pruned;
+                total.limited |= result.limited;
+                total.limit_reasons.extend(&result.limit_reasons);
+                total.bridges.extend(result.bridges.iter().cloned());
+                if result.limited {
+                    limited_sources.insert(from);
+                    limited_pairs.insert((from, to));
+                }
+                for bridge in result.bridges {
+                    proposed.entry(bridge).or_default().insert(small_k);
+                }
             }
         }
+        for (from, result) in totals {
+            searches.push(json!({"k":small_k,"source_segment":from+1,"states":result.states,
+                "candidate_connections":result.bridges.len(),"search_limited":result.limited,
+                "limit_reasons":result.limit_reasons,"unreachable_branches_pruned":result.unreachable_branches_pruned,
+                "reachable_targets":reachable_counts.get(&from).copied().unwrap_or(0),"target_search_count":sinks.len()}));
+        }
     }
-    // Require the reciprocal physical spelling too. A capped search in either
-    // direction cannot silently leave the other direction as a sole candidate.
-    let mut by_sequence = HashMap::<_, Vec<_>>::new();
-    for (id, s) in graph.segments.iter().enumerate() {
-        by_sequence.entry(s.sequence.clone()).or_default().push(id);
-    }
+    // Target budgets isolate discovery, not structural confidence. An
+    // incomplete competing target at ANY k still vetoes every join from the
+    // source, as does an incomplete reciprocal source. Retained proposals
+    // alone cannot hide unenumerated inversions or repeat layouts.
     let retained: Vec<_> = proposed
         .iter()
-        .filter(|((from, to, sequence), _)| {
-            if limited_sources.contains(from) {
-                return false;
-            }
-            let Some(reverse_from) =
-                by_sequence.get(&kmer::reverse_complement(&graph.segments[*to].sequence))
-            else {
-                return false;
-            };
-            let Some(reverse_to) =
-                by_sequence.get(&kmer::reverse_complement(&graph.segments[*from].sequence))
-            else {
-                return false;
-            };
-            let reverse = kmer::reverse_complement(sequence);
-            reverse_from.iter().any(|&a| {
-                !limited_sources.contains(&a)
-                    && reverse_to
-                        .iter()
-                        .any(|&b| proposed.contains_key(&(a, b, reverse.clone())))
-            })
+        .filter(|(bridge, _)| {
+            admission(bridge, &proposed, &limited_sources, &reverse_segments).eligible
         })
         .collect();
+    let mut proposal_records = Vec::new();
+    let mut proposal_reports = Vec::new();
+    for (index, (bridge, ks)) in proposed.iter().enumerate() {
+        let (from, to, sequence) = bridge;
+        let admitted = admission(bridge, &proposed, &limited_sources, &reverse_segments);
+        let search_complete = !limited_pairs.contains(&(*from, *to));
+        let id = format!("end_bridge_proposal_{}", index + 1);
+        let role = roles[&(*from, *to)];
+        proposal_records.push((format!(
+            "{id} source_segment={} target_segment={} role={role} candidate_only=true search_complete={search_complete} join_eligible={}",
+            from+1,to+1,admitted.eligible),sequence.clone()));
+        proposal_reports.push(json!({"id":id,"source_segment":from+1,"target_segment":to+1,
+            "role":role,"sequence_length":sequence.len(),"k_values":ks,"search_complete":search_complete,
+            "join_eligible":admitted.eligible,"admission_reason":admitted.reason}));
+    }
+    crate::io::fasta::write_fasta_records(
+        &out.join("end_bridge_proposals.fasta"),
+        &proposal_records,
+    )?;
     let mut augmented = graph.clone();
     let mut records = Vec::new();
     let mut connections = Vec::new();
@@ -238,7 +530,7 @@ pub(super) fn augment(
         ));
         connections.push(
             json!({"segment":id+1,"source_segment":from+1,"target_segment":to+1,
-            "sequence_length":sequence.len(),"k_values":ks}),
+            "sequence_length":sequence.len(),"k_values":ks,"role":roles[&(*from,*to)]}),
         );
     }
     crate::io::fasta::write_fasta_records(&out.join("end_bridge_candidates.fasta"), &records)?;
@@ -273,19 +565,291 @@ pub(super) fn augment(
     Ok((
         augmented,
         json!({"method":"sample-only small-k paths between unique graph ends; full main-k overlap at both flanks; reciprocal candidate spellings; joint fragment scoring decides joins",
-        "k_values":([47,31].into_iter().filter(|&k|k<settings.k).collect::<Vec<_>>()),
-        "source_ends":sources.len(),"target_ends":sinks.len(),"maximum_added_bases":max_bases,
+        "k_values":small_ks,
+        "source_ends":sources.len(),"target_ends":sinks.len(),"endpoint_pairs":endpoint_pairs,"maximum_endpoint_pairs":MAX_ENDPOINT_PAIRS,"maximum_added_bases":max_bases,
         "maximum_states_per_end_per_k":MAX_STATES,"maximum_candidates_per_end_per_k":MAX_PATHS,
+        "reachability_pruning":"target-specific suffix reachability is an over-approximation; require full main-k flank at arrival and stop at the first complete endpoint",
+        "target_budget_policy":"equal floor shares of the existing per-source per-k state and candidate budgets among suffix-reachable targets; no ID-based remainder allocation",
+        "role_policy":"diagnostic only; reverse-complement endpoints remain eligible proposals, not automatically rejected inversions",
+        "proposal_search_complete_scope":"all tested k values for this source-target pair; join eligibility additionally requires complete competing searches from both reciprocal sources",
         "limited_sources":limited_sources.iter().map(|id|id+1).collect::<Vec<_>>(),
-        "incomplete_search_policy":"discard proposals from both views of any limited source; retain the open end",
-        "candidate_file":"end_bridge_candidates.fasta","graph_file":"path_graph.gfa",
-        "directed_connections_added":connections.len(),"connections":connections,"searches":searches}),
+        "incomplete_search_policy":"save discovered proposals but withhold graph joins from both views of any limited source; retain the open end",
+        "candidate_file":"end_bridge_candidates.fasta","proposal_file":"end_bridge_proposals.fasta","proposals":proposal_reports,"graph_file":"path_graph.gfa",
+        "directed_connections_added":connections.len(),"connections":connections,"searches":searches,"target_searches":target_searches}),
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn limits(k: usize, overlap: usize, max_bases: usize) -> SearchLimits {
+        SearchLimits {
+            k,
+            overlap,
+            max_bases,
+            max_states: MAX_STATES,
+            max_paths: MAX_PATHS,
+        }
+    }
+
+    fn small_edges(sequences: &[&[u8]], k: usize) -> HashMap<kmer::Code, Vec<(kmer::Code, u8)>> {
+        let mask = (1 << (2 * (k - 1))) - 1;
+        let mut edges = HashMap::<_, Vec<_>>::new();
+        for sequence in sequences {
+            kmer::visit(sequence, None, k, 0, |_, c| {
+                edges
+                    .entry(c >> 2)
+                    .or_default()
+                    .push((c & mask, b"ACGT"[(c & 3) as usize]));
+            });
+        }
+        for next in edges.values_mut() {
+            next.sort_unstable();
+            next.dedup();
+        }
+        edges
+    }
+
+    fn segments(sequences: &[&[u8]]) -> PathGraph {
+        PathGraph {
+            segments: sequences
+                .iter()
+                .map(|s| Segment {
+                    sequence: s.to_vec(),
+                    circular: false,
+                })
+                .collect(),
+            outgoing: vec![vec![]; sequences.len()],
+        }
+    }
+
+    #[test]
+    fn excessive_endpoint_metadata_is_rejected_before_reading_fastq() {
+        let mut seed = 783411u64;
+        let mut sequences = Vec::new();
+        for _ in 0..51 {
+            let sequence: Vec<_> = (0..100)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 7;
+                    seed ^= seed << 17;
+                    b"ACGT"[(seed % 4) as usize]
+                })
+                .collect();
+            sequences.push(kmer::reverse_complement(&sequence));
+            sequences.push(sequence);
+        }
+        let graph = segments(&sequences.iter().map(Vec::as_slice).collect::<Vec<_>>());
+        let out = std::env::temp_dir().join(format!(
+            "mitovarr-endpoint-cap-missing-input-{}",
+            std::process::id()
+        ));
+        let reads = Reads {
+            r1: out.join("missing-r1.fq"),
+            r2: out.join("missing-r2.fq"),
+        };
+        assert!(!reads.r1.exists() && !reads.r2.exists());
+        let settings = GraphSettings {
+            coverage_layout: false,
+            multi_k_layout: false,
+            k: 63,
+            min_kmer_count: 3,
+            max_error_fraction: 0.2,
+            max_bubble_fraction: 0.49,
+            min_depth: 10,
+            min_junction_fragments: 3,
+            max_validation_pairs: 10_000,
+        };
+        let resource_limits = Limits {
+            max_kmers: 100_000,
+            min_baseq: 0,
+        };
+        let error = augment(&graph, &reads, &out, &settings, &resource_limits, 1000)
+            .err()
+            .expect("endpoint cap must reject before opening missing FASTQ")
+            .to_string();
+        assert!(
+            error.contains("end-search endpoint-pair metadata limit"),
+            "{error}"
+        );
+        assert!(error.contains("source_ends=102 target_ends=102"), "{error}");
+        assert!(
+            error.contains("endpoint_pairs=10404 maximum_endpoint_pairs=10000"),
+            "{error}"
+        );
+        assert!(!out.exists());
+
+        // No smaller-k search exists at main k=31, so its former no-op
+        // behavior must neither enforce this metadata cap nor open FASTQ.
+        std::fs::create_dir(&out).unwrap();
+        let shorter_k = GraphSettings { k: 31, ..settings };
+        let (unchanged, report) =
+            augment(&graph, &reads, &out, &shorter_k, &resource_limits, 1000).unwrap();
+        assert_eq!(unchanged.segments.len(), graph.segments.len());
+        assert_eq!(unchanged.outgoing, graph.outgoing);
+        assert_eq!(report["endpoint_pairs"], 10_404);
+        assert_eq!(report["maximum_endpoint_pairs"], 10_000);
+        assert_eq!(report["k_values"], json!([]));
+        assert_eq!(report["target_searches"], json!([]));
+        assert_eq!(report["directed_connections_added"], 0);
+        std::fs::remove_dir_all(out).unwrap();
+    }
+
+    #[test]
+    fn target_shares_keep_the_existing_source_resource_bounds() {
+        for count in [0, 1, 2, 3, MAX_PATHS, MAX_PATHS + 1, MAX_STATES + 1] {
+            let (states, paths) = target_budget(count);
+            assert!(states * count <= MAX_STATES);
+            assert!(paths * count <= MAX_PATHS);
+            if count > 0 {
+                assert_eq!(states, MAX_STATES / count);
+                assert_eq!(paths, MAX_PATHS / count);
+            }
+        }
+        let graph = segments(&[b"AAC", b"GTT"]);
+        let edges = small_edges(&[b"AACGT"], 3);
+        let target = HashMap::from([(code(b"GT"), vec![1])]);
+        let small_graph = SearchGraph::new(&edges, &target, 3);
+        let (max_states, max_paths) = target_budget(MAX_PATHS + 1);
+        let result = search(
+            0,
+            &graph,
+            &target,
+            &target,
+            &small_graph,
+            SearchLimits {
+                max_states,
+                max_paths,
+                ..limits(3, 2, 12)
+            },
+        );
+        assert!(result.limited);
+        assert_eq!(result.states, 0);
+        assert!(result.bridges.is_empty());
+        assert!(result.limit_reasons.contains("target_candidate_budget"));
+    }
+
+    #[test]
+    fn competing_target_repeat_cannot_consume_a_completed_target_budget() {
+        let graph = segments(&[b"AAC", b"GTG", b"TTT"]);
+        let edges = small_edges(&[b"AACGT", b"ACCCCTT"], 3);
+        let good_target = HashMap::from([(code(b"GT"), vec![1])]);
+        let repeat_target = HashMap::from([(code(b"TT"), vec![2])]);
+        let all_targets = HashMap::from([(code(b"GT"), vec![1]), (code(b"TT"), vec![2])]);
+        let quota = SearchLimits {
+            max_states: 25,
+            max_paths: 2,
+            ..limits(3, 2, 12)
+        };
+        let good_graph = SearchGraph::new(&edges, &good_target, 3);
+        let repeat_graph = SearchGraph::new(&edges, &repeat_target, 3);
+        let good = search(0, &graph, &good_target, &all_targets, &good_graph, quota);
+        let repeated = search(
+            0,
+            &graph,
+            &repeat_target,
+            &all_targets,
+            &repeat_graph,
+            quota,
+        );
+        assert!(!good.limited);
+        assert_eq!(good.bridges, BTreeSet::from([(0, 1, b"ACGT".to_vec())]));
+        assert!(repeated.limited);
+        assert!(repeated.limit_reasons.contains("target_candidate_budget"));
+        assert!(good.states + repeated.states <= 50);
+        assert!(good.bridges.len() + repeated.bridges.len() <= 4);
+        assert!(repeated.bridges.iter().all(|(_, to, _)| *to == 2));
+
+        // Isolation preserves the completed proposal, not an unsupported
+        // uniqueness claim. A different target's limit still vetoes its join.
+        let bridge = good.bridges.first().unwrap().clone();
+        let reciprocal = (4, 3, kmer::reverse_complement(&bridge.2));
+        let reverse_segments = vec![vec![3], vec![4], vec![5], vec![0], vec![1], vec![2]];
+        let proposed = BTreeMap::from([
+            (bridge.clone(), BTreeSet::from([47])),
+            (reciprocal, BTreeSet::from([47])),
+        ]);
+        // Discovery at k=47 cannot erase a source limit at another k.
+        let rejected = admission(&bridge, &proposed, &BTreeSet::from([0]), &reverse_segments);
+        assert!(!rejected.eligible);
+        assert_eq!(rejected.reason, "source_competing_search_incomplete");
+        let rejected = admission(&bridge, &proposed, &BTreeSet::from([4]), &reverse_segments);
+        assert!(!rejected.eligible);
+        assert_eq!(rejected.reason, "reciprocal_competing_search_incomplete");
+        assert!(admission(&bridge, &proposed, &BTreeSet::new(), &reverse_segments).eligible);
+        let without_reciprocal = BTreeMap::from([(bridge.clone(), BTreeSet::from([47]))]);
+        let unknown = admission(
+            &bridge,
+            &without_reciprocal,
+            &BTreeSet::from([4]),
+            &reverse_segments,
+        );
+        assert_eq!(unknown.reason, "reciprocal_competing_search_incomplete");
+        let missing = admission(
+            &bridge,
+            &without_reciprocal,
+            &BTreeSet::new(),
+            &reverse_segments,
+        );
+        assert_eq!(missing.reason, "reciprocal_spelling_missing");
+    }
+
+    #[test]
+    fn target_isolation_still_stops_at_the_first_full_endpoint() {
+        let graph = segments(&[b"AAC", b"GTT", b"TTG"]);
+        let edges = small_edges(&[b"AACGTT"], 3);
+        let target = HashMap::from([(code(b"TT"), vec![2])]);
+        let all_targets = HashMap::from([(code(b"GT"), vec![1]), (code(b"TT"), vec![2])]);
+        let small_graph = SearchGraph::new(&edges, &target, 3);
+        let result = search(
+            0,
+            &graph,
+            &target,
+            &all_targets,
+            &small_graph,
+            limits(3, 2, 12),
+        );
+        assert!(result.bridges.is_empty());
+        assert!(!result.limited);
+        // Without the intervening endpoint, exactly the same graph has a path.
+        let without_other_endpoint =
+            search(0, &graph, &target, &target, &small_graph, limits(3, 2, 12));
+        assert_eq!(
+            without_other_endpoint.bridges,
+            BTreeSet::from([(0, 2, b"ACGTT".to_vec())])
+        );
+    }
+
+    #[test]
+    fn short_overlapping_bridge_uses_the_existing_source_flank_context() {
+        let graph = segments(&[b"AAAC", b"AACG"]);
+        let edges = small_edges(&[b"AACG"], 3);
+        let target = HashMap::from([(code(b"CG"), vec![1])]);
+        let small_graph = SearchGraph::new(&edges, &target, 3);
+        let result = search(0, &graph, &target, &target, &small_graph, limits(3, 4, 12));
+        assert!(!result.limited);
+        assert_eq!(result.bridges, BTreeSet::from([(0, 1, b"AAACG".to_vec())]));
+    }
+
+    #[test]
+    fn reverse_complement_counterpart_is_a_role_not_a_prohibition() {
+        let graph = segments(&[b"AAC", b"GTT"]);
+        let edges = small_edges(&[b"AACGT"], 3);
+        let target = HashMap::from([(code(b"GT"), vec![1])]);
+        let small_graph = SearchGraph::new(&edges, &target, 3);
+        let result = search(0, &graph, &target, &target, &small_graph, limits(3, 2, 12));
+        let bridge = result.bridges.first().unwrap();
+        let reverse_segments = vec![vec![1], vec![0]];
+        assert_eq!(
+            connection_role(0, 1, &reverse_segments, false),
+            "same_end_reverse_complement"
+        );
+        assert_eq!(bridge.2, kmer::reverse_complement(&bridge.2));
+        let proposed = BTreeMap::from([(bridge.clone(), BTreeSet::from([31]))]);
+        assert!(admission(bridge, &proposed, &BTreeSet::new(), &reverse_segments).eligible);
+    }
+
     #[test]
     fn lower_k_connects_only_observed_sequence_and_marks_an_unsearched_tail() {
         let mut seed = 617113u64;
@@ -320,18 +884,138 @@ mod tests {
                 .push((c & mask, b"ACGT"[(c & 3) as usize]));
         });
         let targets = HashMap::from([(code(&sequence[162..192]), vec![1])]);
-        let joined = search(0, &graph, &targets, &outgoing, k, 62, 200);
+        let small_graph = SearchGraph::new(&outgoing, &targets, k);
+        let joined = search(
+            0,
+            &graph,
+            &targets,
+            &targets,
+            &small_graph,
+            limits(k, 62, 200),
+        );
         assert!(!joined.limited);
         assert_eq!(
             joined.bridges,
             BTreeSet::from([(0, 1, sequence[28..192].to_vec())])
         );
-        let capped = search(0, &graph, &targets, &outgoing, k, 62, 40);
+        let capped = search(
+            0,
+            &graph,
+            &targets,
+            &targets,
+            &small_graph,
+            limits(k, 62, 40),
+        );
         assert!(capped.limited);
         assert!(capped.bridges.is_empty());
         outgoing.remove(&code(&sequence[100..130]));
-        let absent = search(0, &graph, &targets, &outgoing, k, 62, 200);
+        let small_graph = SearchGraph::new(&outgoing, &targets, k);
+        let absent = search(
+            0,
+            &graph,
+            &targets,
+            &targets,
+            &small_graph,
+            limits(k, 62, 200),
+        );
         assert!(!absent.limited);
         assert!(absent.bridges.is_empty());
+        assert_eq!(absent.states, 0);
+    }
+
+    #[test]
+    fn targetless_repeat_cannot_exhaust_a_valid_connector_search() {
+        let graph = PathGraph {
+            segments: vec![
+                Segment {
+                    sequence: b"AAC".to_vec(),
+                    circular: false,
+                },
+                Segment {
+                    sequence: b"GTT".to_vec(),
+                    circular: false,
+                },
+            ],
+            outgoing: vec![vec![], vec![]],
+        };
+        // AAC -> ACG -> CGT reaches the target; ACC -> CCC -> CCC
+        // is a targetless repeat which used to invalidate the whole source.
+        let mut edges = HashMap::<_, Vec<_>>::new();
+        for sequence in [b"AACGT".as_slice(), b"ACCCC"] {
+            kmer::visit(sequence, None, 3, 0, |_, c| {
+                let edge = (c & 15, b"ACGT"[(c & 3) as usize]);
+                let next = edges.entry(c >> 2).or_default();
+                if !next.contains(&edge) {
+                    next.push(edge);
+                }
+            });
+        }
+        let targets = HashMap::from([(code(b"GT"), vec![1])]);
+        let small_graph = SearchGraph::new(&edges, &targets, 3);
+        let result = search(
+            0,
+            &graph,
+            &targets,
+            &targets,
+            &small_graph,
+            limits(3, 2, 12),
+        );
+        assert!(!result.limited);
+        assert_eq!(result.bridges, BTreeSet::from([(0, 1, b"ACGT".to_vec())]));
+        assert_eq!(result.unreachable_branches_pruned, 1);
+
+        // If the repeat gains an exit to the target, its unsearched copy tail
+        // must still block completeness. Reachability must not select one copy.
+        edges
+            .entry(code(b"CC"))
+            .or_default()
+            .push((code(b"CG"), b'G'));
+        let small_graph = SearchGraph::new(&edges, &targets, 3);
+        let repeat = search(
+            0,
+            &graph,
+            &targets,
+            &targets,
+            &small_graph,
+            limits(3, 2, 12),
+        );
+        assert!(repeat.limited);
+        assert!(repeat.bridges.len() > 1);
+    }
+
+    #[test]
+    fn reachable_suffix_does_not_replace_full_flank_matching() {
+        let graph = PathGraph {
+            segments: vec![
+                Segment {
+                    sequence: b"AAAC".to_vec(),
+                    circular: false,
+                },
+                Segment {
+                    sequence: b"TTGT".to_vec(),
+                    circular: false,
+                },
+            ],
+            outgoing: vec![vec![], vec![]],
+        };
+        let mut edges = HashMap::<_, Vec<_>>::new();
+        kmer::visit(b"AACGT", None, 3, 0, |_, c| {
+            edges
+                .entry(c >> 2)
+                .or_default()
+                .push((c & 15, b"ACGT"[(c & 3) as usize]));
+        });
+        let targets = HashMap::from([(code(b"GT"), vec![1])]);
+        let small_graph = SearchGraph::new(&edges, &targets, 3);
+        let result = search(
+            0,
+            &graph,
+            &targets,
+            &targets,
+            &small_graph,
+            limits(3, 4, 12),
+        );
+        assert!(result.bridges.is_empty());
+        assert!(!result.limited);
     }
 }

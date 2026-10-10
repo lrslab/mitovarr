@@ -254,13 +254,17 @@ fn phase_pair(
     Some((best.1.clone(), best.2.cloned()))
 }
 fn sees(
-    pair: &Option<(super::super::align::Hit, Option<super::super::align::Hit>)>,
+    pair: &[(super::super::align::Hit, super::super::align::BaseTrace)],
     interval: (usize, usize),
 ) -> bool {
-    pair.as_ref().is_some_and(|(a, b)| {
-        std::iter::once(a)
-            .chain(b.as_ref())
-            .any(|h| h.start + FLANK <= interval.0 && h.end >= interval.1 + FLANK)
+    pair.iter().any(|(h, trace)| {
+        h.start + FLANK <= interval.0
+            && h.end >= interval.1 + FLANK
+            && if interval.0 == interval.1 {
+                trace.matching_junctions.contains(&interval.0)
+            } else {
+                (interval.0..interval.1).all(|p| trace.matching.contains(&p))
+            }
     })
 }
 
@@ -615,15 +619,27 @@ pub(super) fn resolve(
                 let phase_pairs: Vec<_> = placements
                     .iter()
                     .enumerate()
-                    .map(|(i, (a, b))| {
-                        phase_pair(
-                            a,
-                            b,
+                    .map(|(i, (placed_a, placed_b))| {
+                        let pair = phase_pair(
+                            placed_a,
+                            placed_b,
                             training.model.as_ref(),
                             pivots[i],
                             r1_only,
                             Some(f.hypotheses[i].circle.len()),
-                        )
+                        );
+                        pair.into_iter()
+                            .flat_map(|(x, y)| std::iter::once((x, a)).chain(y.map(|h| (h, b))))
+                            .map(|(hit, read)| {
+                                let trace = super::super::align::trace_alignment(
+                                    read,
+                                    &hit,
+                                    &f.indexes[i].sequence,
+                                    limits.min_baseq,
+                                );
+                                (hit, trace)
+                            })
+                            .collect::<Vec<_>>()
                     })
                     .collect();
                 let mut calls = vec![None; f.blocks.len()];
@@ -796,6 +812,46 @@ mod tests {
             .collect()
     }
     #[test]
+    fn phase_calls_require_observed_alleles_and_a_contiguous_empty_junction() {
+        use super::super::super::align::trace_alignment;
+        let mut target = dna(100, 991817);
+        target[49..52].copy_from_slice(b"ACG");
+        for change in [0, 1, 2] {
+            let mut sequence = target.clone();
+            if change == 1 {
+                sequence.remove(50);
+            }
+            if change == 2 {
+                sequence.insert(50, b'T');
+            }
+            let read = fastq::Record {
+                header: "@phase/1".into(),
+                quality: vec![b'I'; sequence.len()],
+                sequence,
+                plus: "+".into(),
+            };
+            let index = Index::new(&target, false, read.sequence.len());
+            let placements = index.align(&read);
+            let hit = placements
+                .hits
+                .iter()
+                .find(|h| h.start == 0 && h.end == target.len() && !h.reverse)
+                .unwrap();
+            let trace = trace_alignment(&read, hit, &target, 20);
+            let observations = vec![(hit.clone(), trace)];
+            assert_eq!(
+                sees(&observations, (50, 51)),
+                change != 1,
+                "deleted target base is not an observed allele"
+            );
+            assert_eq!(
+                sees(&observations, (50, 50)),
+                change == 0,
+                "insertion or deletion cannot certify an empty junction"
+            );
+        }
+    }
+    #[test]
     fn common_anchors_separate_linked_variants_without_using_allele_reads_as_pivots() {
         let base = dna(600, 18713);
         let hypotheses: Vec<_> = (0..4)
@@ -872,6 +928,8 @@ mod tests {
         outgoing.extend([vec![6, 7, 8, 9], vec![5], vec![5], vec![5], vec![5]]);
         let graph = PathGraph { segments, outgoing };
         let settings = GraphSettings {
+            coverage_layout: false,
+            multi_k_layout: false,
             k: 63,
             min_kmer_count: 3,
             max_error_fraction: 0.2,
@@ -1000,14 +1058,17 @@ mod tests {
             reverse,
             logp,
             edits: 0,
+            traceback: None,
         };
         let a = Placements {
             hits: vec![hit(100, false, 0.0)],
             exhausted: false,
+            complete: false,
         };
         let mut b = Placements {
             hits: vec![hit(300, true, 0.0), hit(500, true, 0.0)],
             exhausted: false,
+            complete: false,
         };
         assert!(phase_pair(&a, &b, None, (100, false, 3), false, None).is_none());
         b.hits[1].logp = -8.0;

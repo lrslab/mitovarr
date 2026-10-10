@@ -1,5 +1,10 @@
-use clap::Parser;
-use mitovarr::{cli::Cli, io::fasta::load_reference, kmer::reverse_complement, run};
+use clap::{CommandFactory, Parser};
+use mitovarr::{
+    cli::{Cli, Commands},
+    io::fasta::load_reference,
+    kmer::reverse_complement,
+    run,
+};
 use noodles_core::Position;
 use noodles_sam::{
     self as sam,
@@ -190,6 +195,10 @@ fn inputs_with_gap(
     noodles_bam::bai::fs::write(path.with_extension("bam.bai"), &index).unwrap();
 }
 fn assemble(dir: &Fixture, out: &str, extra: &[&str]) -> (bool, Vec<u8>, Value) {
+    assemble_mode(dir, out, extra, true)
+}
+
+fn assemble_mode(dir: &Fixture, out: &str, extra: &[&str], deep: bool) -> (bool, Vec<u8>, Value) {
     let mut args = vec![
         "mitovarr".into(),
         "assemble-mapping".into(),
@@ -205,6 +214,9 @@ fn assemble(dir: &Fixture, out: &str, extra: &[&str]) -> (bool, Vec<u8>, Value) 
         "--r2".into(),
         dir.path("r2.fq").display().to_string(),
     ];
+    if deep {
+        args.push("--deep-validation".into());
+    }
     args.extend(extra.iter().map(|s| s.to_string()));
     let status = run(Cli::try_parse_from(args).unwrap()).unwrap();
     let sequence = load_reference(&dir.path(&format!("{out}/candidate.fasta")), None)
@@ -229,6 +241,38 @@ fn insertion(at: usize, noisy: bool) -> (Fixture, Vec<u8>, Vec<u8>) {
     let coordinates: Vec<_> = (0..at).chain(300..540).chain(at..reference.len()).collect();
     inputs(&dir, &reference, &sample, &coordinates, noisy, false);
     (dir, reference, sample)
+}
+
+#[test]
+fn deep_local_assembly_keeps_supported_q19_fastq_paths() {
+    let (dir, reference, sample) = insertion(2100, false);
+    for mate in [1, 2] {
+        let path = dir.path(&format!("r{mate}.fq"));
+        let text = fs::read_to_string(&path).unwrap();
+        let changed = text
+            .lines()
+            .enumerate()
+            .map(|(i, line)| {
+                if i % 4 == 3 {
+                    "4".repeat(line.len())
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(path, changed + "\n").unwrap();
+    }
+    let (complete, sequence, result) = assemble(&dir, "default", &[]);
+    assert!(complete, "{result:#}");
+    assert!(circular_eq(&sequence, &sample));
+    assert_eq!(result["applied_replacements"], 1);
+    let parameters: Value =
+        serde_json::from_slice(&fs::read(dir.path("default/report.json")).unwrap()).unwrap();
+    assert_eq!(parameters["parameters"]["min_baseq"], 0);
+    let (_, filtered, result) = assemble(&dir, "q20", &["--min-baseq", "20"]);
+    assert_eq!(filtered, reference);
+    assert_eq!(result["applied_replacements"], 0);
 }
 
 #[test]
@@ -326,7 +370,7 @@ fn indistinguishable_long_repeat_copies_remain_unresolved() {
         .chain(2100..3000)
         .collect();
     inputs(&dir, &reference, &sample, &coordinates, false, false);
-    let (complete, _, report) = assemble(&dir, "local", &[]);
+    let (complete, strict, report) = assemble(&dir, "local", &[]);
     assert!(!complete, "{report:#}");
     assert!(!Path::new(&dir.path("local/consensus.fasta")).exists());
     assert!(report["windows"]
@@ -349,6 +393,75 @@ fn indistinguishable_long_repeat_copies_remain_unresolved() {
         .unwrap()
         .iter()
         .all(|c| c["score"].is_null() && c["junction_fragments"].is_null()));
+
+    let (complete, with_layout, guided) = assemble(&dir, "guided", &["--coverage-layout"]);
+    assert!(!complete);
+    assert_eq!(strict, with_layout);
+    assert!(!dir.path("guided/consensus.fasta").exists());
+    let layout = &guided["coverage_layout"];
+    assert_eq!(layout["status"], "coverage_inferred_layout", "{guided:#}");
+    assert_eq!(layout["final_verified"], false);
+    let inferred = load_reference(&dir.path("guided/coverage_layout.fasta"), None).unwrap();
+    assert_eq!(inferred.sequence.len(), sample.len());
+    // Total repeat use is identifiable from these uniform reads, but their
+    // placement across two loci is not. Retain alternatives and no final.
+    assert!(
+        layout["joint_copy_model"]["equally_scored_retained_configurations"]
+            .as_u64()
+            .unwrap()
+            > 1
+    );
+    assert_eq!(
+        layout["joint_copy_model"]["cross_window_phase_verified"],
+        false
+    );
+    let mut alternatives = noodles_fasta::io::Reader::new(std::io::BufReader::new(
+        fs::File::open(dir.path("guided/coverage_layout_candidates.fasta")).unwrap(),
+    ));
+    assert!(alternatives
+        .records()
+        .any(|r| circular_eq(r.unwrap().sequence().as_ref(), &sample)));
+    let window = guided["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["coverage_layout"]["status"] == "coverage_inferred_layout")
+        .unwrap();
+    assert_eq!(window["status"], "unresolved");
+    assert_eq!(
+        window["coverage_layout"]["paired_comparison"]["scoring_status"],
+        "evaluated"
+    );
+    assert!(
+        window["coverage_layout"]["paired_comparison"]["common_fragments"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    for row in fs::read_to_string(dir.path("guided/coverage_layout_ambiguity.tsv"))
+        .unwrap()
+        .lines()
+        .skip(1)
+    {
+        let fields: Vec<_> = row.split('\t').collect();
+        let (a, b): (usize, usize) = (fields[1].parse().unwrap(), fields[2].parse().unwrap());
+        assert!(a >= 1 && a <= b && b <= inferred.sequence.len());
+    }
+    let (complete, multi_sequence, multi) =
+        assemble(&dir, "multik", &["--coverage-layout", "--multi-k-layout"]);
+    assert!(!complete);
+    assert_eq!(strict, multi_sequence);
+    assert!(!dir.path("multik/consensus.fasta").exists());
+    let cross: Vec<_> = multi["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|w| w["coverage_layout"]["searches"].as_array())
+        .flatten()
+        .filter(|s| s["method"] == "long_flanks_cross_k_read_context")
+        .collect();
+    assert!(cross.iter().any(|s| s["k"] == 95));
+    assert!(cross.iter().all(|s| s["search_complete"] == false));
 }
 
 #[test]
@@ -369,6 +482,404 @@ fn absent_coverage_is_not_a_deletion_or_reference_filled_sequence() {
     assert_eq!(sequence.len(), reference.len());
     assert!(sequence[1750..2050].iter().all(|b| *b == b'N'));
     assert_eq!(report["applied_replacements"], 0);
+    let (complete, forced, report) = assemble(&dir, "guided", &["--coverage-layout"]);
+    assert!(!complete);
+    assert_eq!(forced, sequence);
+    assert_eq!(report["coverage_layout"]["status"], "no_inferred_windows");
+    assert!(!dir.path("guided/coverage_layout.fasta").exists());
+    let (complete, legacy, report) = assemble(&dir, "legacy_missing", &["--best-effort"]);
+    assert!(complete); // Best-effort output availability, not structural validation.
+    assert_eq!(legacy, sequence);
+    assert!(dir.path("legacy_missing/consensus.fasta").exists());
+    let root: Value =
+        serde_json::from_slice(&fs::read(dir.path("legacy_missing/report.json")).unwrap()).unwrap();
+    assert_eq!(root["status"], "best_effort");
+    assert_eq!(root["strict_validation_passed"], false);
+    // At small k, incidental matches can create a graph route despite a true
+    // coverage gap. Such a route is an explicit counterexample to N-free = solved.
+    assert_eq!(report["legacy_bridge"]["final_verified"], false);
+    let false_bridge = load_reference(&dir.path("legacy_missing/legacy_bridge.fasta"), None)
+        .unwrap()
+        .sequence;
+    let mut doubled_reference = reference.clone();
+    doubled_reference.extend_from_slice(&reference);
+    assert!(!doubled_reference
+        .windows(false_bridge.len())
+        .any(|s| s == false_bridge));
+    for window in report["windows"].as_array().unwrap() {
+        if window["legacy_bridge"]["status"] == "inferred_bridge" {
+            let comparison = &window["legacy_bridge"]["paired_comparison"];
+            assert_eq!(comparison["status"], "diagnostic_only");
+            assert_eq!(comparison["selected_candidate"], Value::Null);
+            assert_eq!(
+                comparison["within_shortlist_status"], "unresolved",
+                "{window:#}"
+            );
+        }
+    }
+}
+
+#[test]
+fn best_effort_writes_consensus_after_strict_search_limits() {
+    let dir = Fixture::new();
+    let mut reference = dna(1400, 729381);
+    let unit = dna(140, 915391);
+    reference[200..340].copy_from_slice(&unit);
+    let insert = unit.repeat(2);
+    let sample = [&reference[..1000], insert.as_slice(), &reference[1000..]].concat();
+    let coordinates: Vec<_> = (0..1000)
+        .chain(200..340)
+        .chain(200..340)
+        .chain(1000..1400)
+        .collect();
+    inputs(&dir, &reference, &sample, &coordinates, false, false);
+    let (_, strict, _) = assemble(&dir, "before_legacy", &["--local-max-paths", "2"]);
+    let (complete, with_legacy, report) =
+        assemble(&dir, "legacy", &["--best-effort", "--local-max-paths", "2"]);
+    assert!(complete, "{report:#}");
+    assert_eq!(with_legacy, strict);
+    assert!(dir.path("legacy/consensus.fasta").exists());
+    let root: Value =
+        serde_json::from_slice(&fs::read(dir.path("legacy/report.json")).unwrap()).unwrap();
+    assert_eq!(root["status"], "best_effort");
+    assert_eq!(root["final_published"], false);
+    assert_eq!(root["consensus_written"], true);
+    assert_eq!(report["legacy_bridge"]["final_verified"], false);
+    assert!(dir.path("legacy/legacy_bridge.fasta").exists());
+    let window = report["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| {
+            w["reason"] == "graph_search_limit" && w["legacy_bridge"]["status"] == "inferred_bridge"
+        })
+        .unwrap();
+    let inferred = &window["legacy_bridge"];
+    assert_eq!(inferred["paired_comparison"]["scoring_status"], "evaluated");
+    assert!(
+        inferred["paired_comparison"]["common_fragments"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(
+        inferred["paired_comparison"]["selected_candidate"],
+        Value::Null
+    );
+    assert_eq!(inferred["search_complete"], false);
+    assert!(inferred["searches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["k"] == 11));
+    let sequence = load_reference(&dir.path("legacy/legacy_bridge.fasta"), None)
+        .unwrap()
+        .sequence;
+    for line in fs::read_to_string(dir.path("legacy/legacy_bridge.ambiguity.tsv"))
+        .unwrap()
+        .lines()
+        .skip(1)
+    {
+        let c: Vec<_> = line.split('\t').collect();
+        let start: usize = c[1].parse().unwrap();
+        let end: usize = c[2].parse().unwrap();
+        assert!(start > 0 && end >= start && end <= sequence.len());
+    }
+}
+
+#[test]
+fn maximum_consensus_fills_six_repeat_copies_at_existing_span_despite_incomplete_strict_search() {
+    let dir = Fixture::new();
+    let donor = Fixture::new();
+    let mut truth = dna(2000, 881392);
+    truth[900..1122].copy_from_slice(&dna(37, 711).repeat(6));
+    let coordinates: Vec<_> = (0..truth.len()).collect();
+    inputs(&donor, &truth, &truth, &coordinates, false, false);
+    inputs_with_gap(
+        &dir,
+        &truth,
+        &truth,
+        &coordinates,
+        false,
+        false,
+        Some(900..1122),
+    );
+    // The BAM cannot cover this region; the supplied sample FASTQ can.
+    for mate in [1, 2] {
+        fs::copy(
+            donor.path(&format!("r{mate}.fq")),
+            dir.path(&format!("r{mate}.fq")),
+        )
+        .unwrap();
+    }
+    let (available, strict, report) = assemble(
+        &dir,
+        "maximum",
+        &["--best-effort", "--local-max-paths", "2"],
+    );
+    assert!(available);
+    assert!(strict.contains(&b'N'), "{report}");
+    let maximum = load_reference(&dir.path("maximum/consensus.fasta"), None)
+        .unwrap()
+        .sequence;
+    assert!(circular_eq(&maximum, &truth));
+    let metadata: Value =
+        serde_json::from_slice(&fs::read(dir.path("maximum/report.json")).unwrap()).unwrap();
+    assert_eq!(metadata["ambiguous_bases"], 0);
+    assert_eq!(metadata["sequence_output"]["fasta"], "consensus.fasta");
+    assert_eq!(metadata["consensus_written"], true);
+    assert_eq!(metadata["strict_validation_passed"], false);
+    assert!(
+        fs::read_to_string(dir.path("maximum/maximum_consensus.ambiguity.tsv"))
+            .unwrap()
+            .lines()
+            .count()
+            > 1
+    );
+    let (available, fast_strict, fast_report) = assemble_mode(&dir, "fast_maximum", &[], false);
+    assert!(available);
+    assert_eq!(fast_strict, strict);
+    let fast = load_reference(&dir.path("fast_maximum/consensus.fasta"), None)
+        .unwrap()
+        .sequence;
+    assert!(circular_eq(&fast, &truth));
+    assert_eq!(fast_report["validation_mode"], "fast_consensus");
+    assert!(fast_report["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w["legacy_bridge"]["status"] == "inferred_fill"));
+    for window in fast_report["windows"].as_array().unwrap() {
+        assert_eq!(window["scoring_status"], "not_run_fast_consensus");
+        assert_eq!(window["common_fragments"], Value::Null);
+    }
+}
+
+#[test]
+fn fast_local_consensus_keeps_all_pairs_and_defers_structural_replacement() {
+    let (dir, reference, sample) = insertion(2100, false);
+    // A complete FASTQ pair absent from the BAM must still enter the graph.
+    for mate in [1, 2] {
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path(&format!("r{mate}.fq")))
+            .unwrap();
+        writeln!(
+            file,
+            "@extra/{mate}\n{}\n+\n{}",
+            String::from_utf8_lossy(&reference[400..500]),
+            "I".repeat(100)
+        )
+        .unwrap();
+    }
+    let (available, candidate, report) = assemble_mode(&dir, "fast", &[], false);
+    assert!(available);
+    assert_eq!(candidate, reference);
+    assert_eq!(report["named_pairs"], sample.len() / 2 + 1);
+    assert_eq!(report["applied_replacements"], 0);
+    assert_eq!(report["validation_mode"], "fast_consensus");
+    assert_eq!(report["fragment_model"]["status"], "not_run_fast_consensus");
+    let windows = report["windows"].as_array().unwrap();
+    assert!(!windows.is_empty());
+    for window in windows {
+        assert_eq!(window["status"], "unresolved");
+        assert_eq!(window["scoring_status"], "not_run_fast_consensus");
+        assert_eq!(window["common_fragments"], Value::Null);
+        assert_eq!(window["unscored_fragments"], Value::Null);
+        assert_eq!(window["best_candidate"], Value::Null);
+        assert_eq!(window["search"]["states"], Value::Null);
+        for c in window["candidates"].as_array().into_iter().flatten() {
+            assert_eq!(c["score"], Value::Null);
+        }
+    }
+    assert!(!fs::read_dir(dir.path("fast/local_assembly"))
+        .unwrap()
+        .any(|p| p.unwrap().path().extension().is_some_and(|s| s == "gz")));
+    let sequence = load_reference(&dir.path("fast/consensus.fasta"), None)
+        .unwrap()
+        .sequence;
+    assert!(circular_eq(&sequence, &reference));
+    let uncertainty = fs::read_to_string(dir.path("fast/maximum_consensus.ambiguity.tsv")).unwrap();
+    assert!(uncertainty.contains("structural_validation_deferred"));
+    for row in uncertainty.lines().skip(1) {
+        let fields: Vec<_> = row.split('\t').collect();
+        assert_eq!(fields[0], "MtDNA");
+        let start = fields[1].parse::<usize>().unwrap();
+        let end = fields[2].parse::<usize>().unwrap();
+        assert!(start > 0 && end >= start && end <= sequence.len());
+    }
+    let root: Value =
+        serde_json::from_slice(&fs::read(dir.path("fast/report.json")).unwrap()).unwrap();
+    assert_eq!(root["status"], "best_effort");
+    assert_eq!(root["validation_mode"], "fast_consensus");
+    assert_eq!(root["strict_validation_passed"], false);
+    assert_eq!(root["circularity_verified"], false);
+    assert_eq!(root["subsampling"]["enabled"], false);
+}
+
+#[test]
+fn best_effort_retains_a_complete_consensus_when_no_fill_is_needed() {
+    let dir = Fixture::new();
+    let truth = dna(1200, 798341);
+    inputs(
+        &dir,
+        &truth,
+        &truth,
+        &(0..truth.len()).collect::<Vec<_>>(),
+        false,
+        false,
+    );
+    let (available, _, _) = assemble(&dir, "complete_maximum", &["--best-effort"]);
+    assert!(available);
+    let text = fs::read_to_string(dir.path("complete_maximum/consensus.fasta")).unwrap();
+    assert!(text.lines().next().unwrap().contains("final_verified=true"));
+    let seq = load_reference(&dir.path("complete_maximum/consensus.fasta"), None)
+        .unwrap()
+        .sequence;
+    assert!(circular_eq(&seq, &truth));
+    let report: Value =
+        serde_json::from_slice(&fs::read(dir.path("complete_maximum/report.json")).unwrap())
+            .unwrap();
+    assert_eq!(report["strict_validation_passed"], true);
+    assert_eq!(report["consensus_written"], true);
+    let (available, _, _) = assemble_mode(&dir, "fast_complete", &[], false);
+    assert!(available);
+    let text = fs::read_to_string(dir.path("fast_complete/consensus.fasta")).unwrap();
+    assert!(text
+        .lines()
+        .next()
+        .unwrap()
+        .contains("final_verified=false"));
+    let report: Value =
+        serde_json::from_slice(&fs::read(dir.path("fast_complete/report.json")).unwrap()).unwrap();
+    assert_eq!(report["strict_validation_passed"], false);
+    assert_eq!(report["validation_mode"], "fast_consensus");
+}
+
+#[test]
+fn mapping_command_and_best_effort_options_use_current_names() {
+    let top_help = Cli::command().render_long_help().to_string();
+    for command in ["assemble-baited", "assemble-seeded", "assemble-mapping"] {
+        assert!(top_help.contains(command));
+    }
+    assert!(!top_help.contains("assemble-denovo"));
+    assert!(!top_help.contains("polish"));
+    for command in ["assemble-mapping", "polish"] {
+        let base = [
+            "mitovarr",
+            command,
+            "--ref",
+            "ref.fa",
+            "--bam",
+            "x.bam",
+            "--out",
+            "out",
+            "--local-assembly",
+            "--r1",
+            "a.fq",
+            "--r2",
+            "b.fq",
+        ];
+        let Commands::AssembleMapping(default) = Cli::try_parse_from(base).unwrap().command else {
+            panic!("expected mapping command");
+        };
+        assert!(!default.best_effort);
+        assert!(!default.deep_validation);
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--coverage-layout"])).is_err());
+        let Commands::AssembleMapping(deep) = Cli::try_parse_from(
+            base.into_iter()
+                .chain(["--deep-validation", "--coverage-layout"]),
+        )
+        .unwrap()
+        .command
+        else {
+            panic!("expected mapping command")
+        };
+        assert!(deep.deep_validation && deep.coverage_layout);
+        for option in ["--best-effort", "--legacy-bridge"] {
+            let Commands::AssembleMapping(args) =
+                Cli::try_parse_from(base.into_iter().chain([option]))
+                    .unwrap()
+                    .command
+            else {
+                panic!("expected mapping command");
+            };
+            assert!(args.best_effort);
+        }
+    }
+    let help = Cli::try_parse_from(["mitovarr", "assemble-mapping", "--help"])
+        .unwrap_err()
+        .to_string();
+    assert!(help.contains("--best-effort"));
+    assert!(help.contains("--deep-validation"));
+    assert!(!help.contains("--legacy-bridge"));
+    assert!(help.contains("Usage: mitovarr assemble-mapping"));
+    assert!(!help.contains("polish"));
+    assert!(Cli::try_parse_from([
+        "mitovarr",
+        "assemble-mapping",
+        "--ref",
+        "ref.fa",
+        "--bam",
+        "x.bam",
+        "--out",
+        "out",
+        "--best-effort"
+    ])
+    .is_err());
+    assert!(Cli::try_parse_from([
+        "mitovarr",
+        "assemble-baited",
+        "--r1",
+        "a.fq",
+        "--r2",
+        "b.fq",
+        "--out",
+        "out",
+        "--best-effort"
+    ])
+    .is_err());
+}
+
+#[test]
+fn repeat_ambiguity_at_origin_remains_unresolved_without_coverage() {
+    let dir = Fixture::new();
+    let reference = dna(1000, 892414);
+    inputs_with_gap(
+        &dir,
+        &reference,
+        &reference,
+        &(0..reference.len()).collect::<Vec<_>>(),
+        false,
+        false,
+        Some(0..300),
+    );
+    let (complete, sequence, report) = assemble(&dir, "local", &[]);
+    assert!(!complete, "{report:#}");
+    assert_eq!(sequence.len(), reference.len());
+    assert!(sequence[..300].iter().all(|&b| b == b'N'));
+    let root_report: Value =
+        serde_json::from_slice(&fs::read(dir.path("local/report.json")).unwrap()).unwrap();
+    assert_eq!(
+        root_report["sequence_output"]["status"],
+        "partial_available"
+    );
+    assert_eq!(root_report["final_published"], false);
+    assert_eq!(report["applied_replacements"], 0);
+    assert!(report["remaining_repeat_intervals"].as_u64().unwrap() > 0);
+    assert!(!dir.path("local/consensus.fasta").exists());
+    let ambiguity = fs::read_to_string(dir.path("local/ambiguity.tsv")).unwrap();
+    assert!(ambiguity.lines().skip(1).any(|row| row.starts_with("1\t")));
+    let (available, fast_candidate, _) = assemble_mode(&dir, "fast_missing", &[], false);
+    assert!(available);
+    assert_eq!(fast_candidate, sequence);
+    let fast = load_reference(&dir.path("fast_missing/consensus.fasta"), None)
+        .unwrap()
+        .sequence;
+    assert!(fast.contains(&b'N'));
+    let root: Value =
+        serde_json::from_slice(&fs::read(dir.path("fast_missing/report.json")).unwrap()).unwrap();
+    assert_eq!(root["strict_validation_passed"], false);
 }
 
 #[test]

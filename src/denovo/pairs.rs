@@ -23,6 +23,17 @@ pub(crate) struct Library {
 }
 
 impl Library {
+    #[cfg(test)]
+    pub(crate) fn test_model(inward: bool, geometry_usable: bool, probabilities: Vec<f64>) -> Self {
+        Self {
+            inward,
+            geometry_usable,
+            peak: probabilities.iter().copied().fold(0.0f64, f64::max),
+            upper: probabilities.len().saturating_sub(1),
+            probabilities,
+        }
+    }
+
     pub fn peak_probability(&self) -> f64 {
         self.peak
     }
@@ -30,12 +41,19 @@ impl Library {
         self.probabilities.get(span).copied().unwrap_or(0.0)
     }
     pub fn span(&self, a: &Hit, b: &Hit) -> Option<usize> {
-        if a.reverse == b.reverse {
+        self.span_coordinates((a.start, a.end, a.reverse), (b.start, b.end, b.reverse))
+    }
+    pub fn span_coordinates(
+        &self,
+        a: (usize, usize, bool),
+        b: (usize, usize, bool),
+    ) -> Option<usize> {
+        if a.2 == b.2 {
             return None;
         }
-        let (forward, reverse) = if a.reverse { (b, a) } else { (a, b) };
-        let inward = forward.start < reverse.end;
-        (inward == self.inward).then_some(a.end.max(b.end) - a.start.min(b.start))
+        let (forward, reverse) = if a.2 { (b, a) } else { (a, b) };
+        let inward = forward.0 < reverse.1;
+        (inward == self.inward).then_some(a.1.max(b.1) - a.0.min(b.0))
     }
 }
 
@@ -101,6 +119,7 @@ impl ExactIndex {
                 reverse,
                 logp: 0.0,
                 edits: 0,
+                traceback: None,
             },
         ))
     }
@@ -367,6 +386,265 @@ pub(crate) fn estimate_sequences(
 mod tests {
     use super::*;
     #[test]
+    fn same_start_alternative_end_can_win_the_joint_score() {
+        use super::super::{align, evidence};
+        let read = Record {
+            header: "@end/1".into(),
+            sequence: b"ACGTA".to_vec(),
+            quality: vec![b'I'; 5],
+            plus: "+".into(),
+        };
+        let index = Index::new(b"ACGTAG", false, 5);
+        let mut prepared = align::Prepared::new(&read);
+        let mut placements = index.profile_all(&mut prepared);
+        assert!(placements.complete);
+        placements.hits.retain(|h| h.start == 0 && !h.reverse);
+        let observations = evidence::observations(&placements, &read, &index, 0);
+        let best = observations
+            .iter()
+            .max_by(|a, b| a.0.logp.total_cmp(&b.0.logp))
+            .unwrap();
+        assert_eq!(best.0.end, 5);
+        assert!(observations
+            .iter()
+            .any(|h| h.0.end == 6 && h.0.logp < best.0.logp));
+        let mate = [(
+            Hit {
+                start: 1,
+                end: 4,
+                reverse: true,
+                logp: 0.0,
+                edits: 0,
+                traceback: None,
+            },
+            align::BaseTrace::default(),
+        )];
+        let model = Library {
+            inward: true,
+            geometry_usable: true,
+            peak: 1.0,
+            upper: 6,
+            probabilities: vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.000001, 0.999999],
+        };
+        let score = |hits: &[(Hit, align::BaseTrace)]| {
+            evidence::joint(
+                hits,
+                &mate,
+                Some(&model),
+                align::ideal_score(&read),
+                0,
+                [0, 0],
+                None,
+            )
+        };
+        let complete = score(&observations);
+        let sequence_only = score(std::slice::from_ref(best));
+        assert!(complete.score > sequence_only.score + 2.0);
+        assert_eq!(
+            complete.diagnostics["span_states"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn mate_gap_is_a_bracket_but_never_an_observed_junction() {
+        use super::super::{align, evidence};
+        let mut seed = 81829u64;
+        let sequence: Vec<_> = (0..220)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                b"ACGT"[(seed % 4) as usize]
+            })
+            .collect();
+        let record = |sequence: Vec<u8>| Record {
+            header: "@fragment".into(),
+            quality: vec![b'I'; sequence.len()],
+            sequence,
+            plus: "+".into(),
+        };
+        let a = record(sequence[10..60].to_vec());
+        let b = record(kmer::reverse_complement(&sequence[140..190]));
+        let index = Index::new(&sequence, false, 50);
+        let mut probabilities = vec![0.0; 181];
+        probabilities[180] = 1.0;
+        let model = Library {
+            inward: true,
+            geometry_usable: true,
+            peak: 1.0,
+            upper: 180,
+            probabilities,
+        };
+        let result = evidence::joint(
+            &evidence::observations(&index.align(&a), &a, &index, 0),
+            &evidence::observations(&index.align(&b), &b, &index, 0),
+            Some(&model),
+            align::ideal_score(&a) + align::ideal_score(&b),
+            0,
+            [100, 100],
+            Some([20, 150]),
+        );
+        assert!(result.score > -1.0);
+        assert_eq!(result.observed_junctions, [false, false]);
+        assert_eq!(result.mate_brackets, [true, true]);
+        assert!(result.contraction); // The two flanks, unlike the gap, were sequenced.
+    }
+    #[test]
+    fn whole_hypothesis_rescue_keeps_seeded_decoy_and_is_rotation_invariant() {
+        check_seedless_rescue(false);
+    }
+    #[test]
+    fn sequence_best_decoy_in_geometry_tail_does_not_suppress_better_joint_explanation() {
+        check_seedless_rescue(true);
+    }
+    fn check_seedless_rescue(tail: bool) {
+        use super::super::{
+            align::{self, Prepared},
+            evidence,
+        };
+        let mut seed = 129173u64;
+        let mut sequence: Vec<_> = (0..1000)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                b"ACGT"[(seed % 4) as usize]
+            })
+            .collect();
+        let a = Record {
+            header: "@test/1".into(),
+            sequence: sequence[850..930].to_vec(),
+            plus: "+".into(),
+            quality: vec![b'I'; 80],
+        };
+        let mut query: Vec<_> = (970..1050).map(|p| sequence[p % 1000]).collect();
+        let mut quality = vec![b'I'; 80];
+        for p in (6..80).step_by(14) {
+            query[p] = if query[p] == b'A' { b'C' } else { b'A' };
+            quality[79 - p] = if tail { b'$' } else { b'!' };
+        }
+        sequence[400..480].copy_from_slice(&query);
+        let b = Record {
+            header: "@test/2".into(),
+            sequence: kmer::reverse_complement(&query),
+            plus: "+".into(),
+            quality,
+        };
+        let upper = if tail { 650 } else { 220 };
+        let mut probabilities = vec![0.0; upper + 1];
+        probabilities[200] = if tail { 0.999999 } else { 1.0 };
+        if tail {
+            probabilities[630] = 0.000001;
+        }
+        let model = Library {
+            inward: true,
+            geometry_usable: true,
+            peak: 1.0,
+            upper,
+            probabilities,
+        };
+        let mut scores = Vec::new();
+        for reverse in [false, true] {
+            let oriented = if reverse {
+                kmer::reverse_complement(&sequence)
+            } else {
+                sequence.clone()
+            };
+            for offset in [0, 30, 400, 900] {
+                let rotated = [&oriented[offset..], &oriented[..offset]].concat();
+                let indexes = [Index::new(&rotated, true, 80)];
+                let mut one = Prepared::new(&a);
+                let mut two = Prepared::new(&b);
+                let mut placements = vec![(
+                    indexes[0].align_prepared(&mut one),
+                    indexes[0].align_prepared(&mut two),
+                )];
+                assert!(!placements[0].1.hits.is_empty());
+                let before = placements[0].1.hits.clone();
+                let before_score = evidence::joint(
+                    &evidence::observations(&placements[0].0, &a, &indexes[0], 0),
+                    &evidence::observations(&placements[0].1, &b, &indexes[0], 0),
+                    Some(&model),
+                    align::ideal_score(&a) + align::ideal_score(&b),
+                    1000,
+                    [0, 0],
+                    None,
+                )
+                .score;
+                let seeds = {
+                    let mut seeds = HashSet::new();
+                    kmer::visit(&a.sequence, None, 21, 0, |_, c| {
+                        seeds.insert(kmer::canonical(c, 21));
+                    });
+                    seeds
+                };
+                let pivot = super::super::anchor::Pivot::choose([&a, &b], &seeds, 0).unwrap();
+                assert_eq!(pivot.mate, 0);
+                let locations = super::super::anchor::locations(&indexes[0], &seeds);
+                pivot.constrain(
+                    &mut placements[0].0,
+                    &a,
+                    &mut one,
+                    &indexes[0],
+                    &locations,
+                    0,
+                );
+                let rescued = evidence::rescue_pool(
+                    &indexes,
+                    &mut placements,
+                    &mut one,
+                    &mut two,
+                    Some(&model),
+                    0,
+                );
+                assert!(rescued.seeded_decoy_searches > 0);
+                assert!(
+                    rescued.added_placements > 0,
+                    "rotation {offset}, reverse {reverse}"
+                );
+                assert!(
+                    placements[0].0.complete && placements[0].1.complete,
+                    "{:?}",
+                    rescued.states
+                );
+                for hit in before.into_iter().filter(|_| tail) {
+                    assert!(placements[0]
+                        .1
+                        .hits
+                        .iter()
+                        .any(|h| h.start == hit.start && h.reverse == hit.reverse));
+                }
+                let result = evidence::joint(
+                    &evidence::observations(&placements[0].0, &a, &indexes[0], 0),
+                    &evidence::observations(&placements[0].1, &b, &indexes[0], 0),
+                    Some(&model),
+                    align::ideal_score(&a) + align::ideal_score(&b),
+                    1000,
+                    [0, 0],
+                    None,
+                );
+                if tail {
+                    assert!(
+                        result.score > before_score + 2.0,
+                        "{} -> {}",
+                        before_score,
+                        result.score
+                    );
+                }
+                scores.push(result.score);
+            }
+        }
+        assert!(
+            scores.iter().all(|s| (*s - scores[0]).abs() < 1e-8),
+            "{scores:?}"
+        );
+        assert!(scores[0] > -12.0);
+    }
+    #[test]
     fn overlapping_mates_use_outer_span_and_orientation() {
         let library = Library {
             inward: true,
@@ -381,6 +659,7 @@ mod tests {
             reverse: false,
             logp: 0.0,
             edits: 0,
+            traceback: None,
         };
         let b = Hit {
             start: 80,
@@ -388,6 +667,7 @@ mod tests {
             reverse: true,
             logp: 0.0,
             edits: 0,
+            traceback: None,
         };
         assert_eq!(library.span(&a, &b), Some(170));
         assert_eq!(library.span(&b, &a), Some(170));
@@ -473,6 +753,8 @@ mod tests {
         }
         drop((r1, r2));
         let settings = GraphSettings {
+            coverage_layout: false,
+            multi_k_layout: false,
             k: 63,
             min_kmer_count: 3,
             max_error_fraction: 0.2,

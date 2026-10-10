@@ -25,7 +25,9 @@ pub struct WindowMetrics {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AmbiguityInterval {
+    /// Zero-based inclusive reference coordinate.
     pub start: usize,
+    /// Zero-based inclusive reference coordinate.
     pub end: usize,
     pub len: usize,
     pub triggers: String,

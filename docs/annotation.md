@@ -1,5 +1,11 @@
 # Native gene prediction and tRNA-Pro rotation
 
+NCR1 completeness is not required for gene-level evaluation. Every annotation
+now writes `gene_quality.tsv` and `records[].gene_quality`, distinguishing
+annotation-clear models from missing, incomplete, duplicated or uncertain gene
+placements. Supplied assembly uncertainty still flags affected genes. See
+[partial results and the limits of these checks](partial_results.md).
+
 [中文：tRNA/CDS 检出与完整度规则](annotation.zh-CN.md).
 
 `mitovarr annotate` is an offline, in-process Rust **homology-assisted gene predictor** for already generated mitochondrial candidates. It annotates CDS, rRNA and tRNA on both strands, retains distinct copies, and optionally standardizes circular coordinates using tRNA-Pro. The command does not select assembly paths, repair sequence bases, validate circular closure or change an assembly's publication status.
@@ -68,6 +74,8 @@ A terminal SNP can be clipped by local alignment and cause a `partial` classific
 
 Default `--topology auto` first reads `annotation_topology=circular|linear` from the FASTA header. Without that annotation tag, only a literal `circular=true` asserts a circular input hypothesis; other records are linear. Explicit `--topology linear` or `--topology circular` overrides either header convention. This option asserts an input convention; it does not establish the missing connection of a linear contig.
 
+De novo `primary.fasta` records `circular` and `final_verified` in its header and uses the record ID expected by `primary_ambiguity.tsv`. The independent `best_circular.fasta` output carries the same metadata and pairs with `best_circular_ambiguity.tsv`. De novo `consensus.fasta` instead has the plain header `>mitochondrion`; mapping `candidate.fasta` and `consensus.fasta` likewise contain only the contig name. These unmarked records default to linear even when a de novo final assembly passed circular validation. Supply `--topology circular` explicitly to rotate an unmarked output when supported by its assembly evidence. An ambiguity table must match the selected FASTA's record IDs and coordinates.
+
 Every `annotated.fasta` records the topology used in `annotation_topology`, so annotating that output again with auto preserves its interpretation. Existing assembly tokens such as `circular`, `status` and `final_verified` are retained unchanged. An explicit circular annotation assumption does not turn `circular=false` or an unresolved assembly into a validated circle.
 
 For a mapping consensus in a known circular coordinate system, an explicit example is:
@@ -88,7 +96,7 @@ The report records `input_anchor_1based`, `reverse_complemented` and `offset_0ba
 
 ## Carrying assembly uncertainty into annotation
 
-Optionally supply `--assembly-ambiguity primary_ambiguity.tsv` with the matching de novo `primary.fasta`, or local mapping `structural_ambiguity.tsv` with its `candidate.fasta`. A previously projected annotation table is also accepted with its matching FASTA. Rust transforms the existing intervals with the sequence, splits at the new origin and merges adjacent/overlapping pieces from the same evidence. Each projected region keeps its source evidence, reason, alternative count and input segments, and lists overlapping genes and NCR loci. This operation uses existing evidence; it does not rescore reads or infer structural variants.
+Optionally supply `--assembly-ambiguity primary_ambiguity.tsv` with the matching de novo `primary.fasta`, `best_circular_ambiguity.tsv` with `best_circular.fasta`, or local mapping `structural_ambiguity.tsv` with its `candidate.fasta`. A previously projected annotation table is also accepted with its matching FASTA. Rust transforms the existing intervals with the sequence, splits at the new origin and merges adjacent/overlapping pieces from the same evidence. Each projected region keeps its source evidence, reason, alternative count and input segments, and lists overlapping genes and NCR loci. This operation uses existing evidence; it does not rescore reads or infer structural variants.
 
 The optional outputs `assembly_ambiguity.tsv` and `assembly_ambiguity.gff3` use **one-based inclusive coordinates in `annotated.fasta`**. The TSV retains the six input columns (`sequence, start, end, evidence, reason, alternatives`) and appends `id, input_segments_1based, genes, ncr_loci`; split regions have one row per output segment. The projected TSV and `annotated.fasta` can be supplied together to a subsequent annotation. Inputs must already use the same coordinates: mapping `ambiguity.tsv` describes the reference and is not accepted by this option.
 
@@ -104,12 +112,13 @@ Evidence is associated with positional loci even when no NCR interval passes the
 | `annotated.fasta` | The same records, with successful rotations applied and `annotation_topology` recorded; existing assembly status tokens retained |
 | `annotations.gff3` | Gene, NCR and optional projected assembly regions in `annotated.fasta` coordinates; circular-origin splits use the same feature ID and strand-aware CDS phase |
 | `features.tsv` | One row per physical feature: segments, model interval, identity, boundaries, completeness and coding defects |
+| `gene_quality.tsv` | One row per expected model: annotation status, placement counts, issues and overlap with supplied assembly uncertainty; NCR1 completeness is not a gate |
 | `genes.fna` | All detected feature sequences in biological 5′→3′ orientation, including flagged partial/alternate copies |
 | `proteins.faa` | Translations with partial/defective status in the header; internal stops and X codons retained |
 | `ncr.gff3`, `ncr.tsv`, `ncr.fasta` | Positional NCR intervals and generic gaps, their boundaries and sample sequences |
 | `ncr_loci.tsv` | Four NCR position states per species contig, including unresolved or short intervals |
 | `assembly_ambiguity.tsv`, `assembly_ambiguity.gff3` | Only with `--assembly-ambiguity`: projected source intervals, including open ends and retained path alternatives |
-| `report.json` | Per-contig genes, missing and non-full-length models, search limits, coordinate transformation, NCR regions/loci and optional `assembly_evidence` |
+| `report.json` | Per-contig genes, missing and non-full-length models, `gene_quality`, search limits, coordinate transformation, NCR regions/loci and optional `assembly_evidence` |
 
 GFF/TSV/JSON segment positions are 1-based inclusive. Gene segments follow biological order; NCR segments follow forward genomic order through a possible circular origin. For partial CDS the phase is inferred from the model interval, and completeness remains partial; translation is never silently skipped because the GFF phase is missing. Gene/protein FASTA IDs match the GFF feature IDs. A `feature_counts` total includes partial and duplicate gene placements; `full_length_counts` includes supported genes, and `models_without_full_length_support` asks whether each expected model has at least one supported placement. Counts alone do not validate an assembly.
 

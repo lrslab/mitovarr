@@ -1,5 +1,5 @@
 //! Bounded, order-independent sampling of whole named BAM fragments.
-use crate::{cli::PolishArgs, io::fastq};
+use crate::{cli::MappingArgs, io::fastq};
 use anyhow::{ensure, Result};
 use serde_json::{json, Value};
 use std::{
@@ -59,7 +59,7 @@ impl Selection {
     pub fn report(&self) -> Value {
         json!({"enabled":true,"applied":self.seen>self.retained,"method":"whole-query-name priority prefix under exact target-BAM record cap", "seed":self.seed,"input_target_records":self.seen,"retained_target_records":self.retained,"retained_templates":self.entries.len(),"max_records":self.limit,"evidence_scope":"subsampled target-BAM fragments and their matching complete FASTQ pairs","limitation":"coverage and variant fractions describe retained evidence; subsampling can lose rare alleles or weak structural support"})
     }
-    pub fn paired_reads(&self, args: &PolishArgs) -> Result<(PolishArgs, Value)> {
+    pub fn paired_reads(&self, args: &MappingArgs) -> Result<(MappingArgs, Value)> {
         let mut sampled = args.clone();
         let mut info = self.report();
         if args.local_assembly {

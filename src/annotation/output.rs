@@ -18,6 +18,7 @@ pub(super) struct Annotated {
     pub circular: bool,
     pub ncr: NcrAnalysis,
     pub assembly_evidence: Option<super::uncertainty::Analysis>,
+    pub gene_quality: super::quality::Summary,
 }
 
 fn annotated_header(record: &Record, result: &Annotated) -> String {
@@ -132,6 +133,8 @@ pub(super) fn write(
     let mut gff = BufWriter::new(File::create(out.join("annotations.gff3"))?);
     writeln!(gff,"##gff-version 3\n# model_accession={}\n# coordinates=annotated.fasta; method=homology_assisted; RNA_structure=not_assessed", escape(&panel.accession))?;
     let mut table = BufWriter::new(File::create(out.join("features.tsv"))?);
+    let mut quality_table = BufWriter::new(File::create(out.join("gene_quality.tsv"))?);
+    writeln!(quality_table,"contig\tgene\ttype\tstatus\tplacements\tfull_length_placements\tfeature_ids\tassembly_region_ids\tissues\tassembly_ambiguity_supplied")?;
     let mut ncr_gff = BufWriter::new(File::create(out.join("ncr.gff3"))?);
     writeln!(ncr_gff,"##gff-version 3\n# coordinates=annotated.fasta; labels=positional; sequence_origin=not_assessed")?;
     let mut ncr_table = BufWriter::new(File::create(out.join("ncr.tsv"))?);
@@ -154,6 +157,22 @@ pub(super) fn write(
         None
     };
     for (record, result) in records.iter().zip(results) {
+        for gene in &result.gene_quality.genes {
+            writeln!(
+                quality_table,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                tsv(&record.name),
+                tsv(&gene.gene),
+                gene.kind,
+                gene.status,
+                gene.placements,
+                gene.full_length_placements,
+                gene.feature_ids.join(","),
+                gene.assembly_region_ids.join(","),
+                gene.issues.join(","),
+                result.gene_quality.assembly_ambiguity_supplied
+            )?;
+        }
         writeln!(
             gff,
             "##sequence-region {} 1 {}",
@@ -314,6 +333,7 @@ pub(super) fn write(
     write_fasta_records(&out.join("genes.fna"), &genes)?;
     write_fasta_records(&out.join("proteins.faa"), &proteins)?;
     write_fasta_records(&out.join("ncr.fasta"), &ncr_sequences)?;
+    quality_table.flush()?;
     Ok(())
 }
 

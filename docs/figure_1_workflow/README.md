@@ -1,7 +1,9 @@
-# Figure 1: current native Rust workflow
+# Detailed method schematic: current native Rust workflow
 
 This figure describes the current standalone `mitovarr` workflow. All panels
-are schematic.
+are schematic. The main README uses the separate five-panel
+[overview Figure 1](../figures/README.md); this four-panel schematic provides
+additional method detail.
 
 ![Current native Rust workflow](figure_1_workflow.png)
 
@@ -40,7 +42,7 @@ build and runtime do not call this script or any external bioinformatics tool.
 | --- | --- | --- |
 | a | [`caendr.rs`](../../src/caendr.rs), [`bait.rs`](../../src/bait.rs), [`cli.rs`](../../src/cli.rs) | [CaenDR extraction](../caendr.md) and [input contracts](../../README.md#workflows-and-input-scope). BAM-baited input and validation have `mt-bam-extracted` scope. Seeded recruitment must converge before a final assembly can be published. |
 | b | [`denovo.rs`](../../src/denovo.rs), [`denovo/paths.rs`](../../src/denovo/paths.rs), [`denovo/threading.rs`](../../src/denovo/threading.rs) | [Native assembly](../de_novo.md), [joint fragment scoring](../paired_paths.md) and [sample-only end connections](../de_novo.md#end-connections-and-simple-repeat-copies). `primary.fasta` can remain unresolved; `consensus.fasta` is conditional. |
-| c | [`polish.rs`](../../src/polish.rs), [`mapping.rs`](../../src/mapping.rs), [`mapping/scoring.rs`](../../src/mapping/scoring.rs) | [Mapping and local reconstruction](../mapping_local_assembly.md). FASTQ are not globally remapped by this package. Optional local assembly needs matching paired FASTQ. |
+| c | [`mapping_assembly.rs`](../../src/mapping_assembly.rs), [`mapping.rs`](../../src/mapping.rs), [`mapping/scoring.rs`](../../src/mapping/scoring.rs) | [Mapping assembly and local reconstruction](../mapping_local_assembly.md). FASTQ are not globally remapped by this package. Optional local assembly needs matching paired FASTQ. |
 | d | [`annotation/mod.rs`](../../src/annotation/mod.rs), [`annotation/ncr.rs`](../../src/annotation/ncr.rs), [`annotation/uncertainty.rs`](../../src/annotation/uncertainty.rs) | [Homology annotation and tRNA-Pro rotation](../annotation.md), [positional NCRs](../ncr.md). RNA structure is not assessed. Annotation is independent of assembly selection. |
 
 The diagram's paired arrows illustrate inward-facing fragments; actual scoring
@@ -49,11 +51,13 @@ fragment cohort is used across candidates; sequence-only evidence remains
 available when the geometry model is unusable. Bounded searches retain explicit
 unresolved outcomes.
 
-The optional mapping extension compares replacements in whole-contig contexts,
+Mapping local mode defaults to fast consensus with deferred structural scoring.
+The diagram’s comparison stages require `--deep-validation`; they compare
+replacements in whole-contig contexts,
 retaining the original homologous copy. It does not jointly phase distant
 windows. An absent segment in the backbone schematic represents a sequence
 reconstruction hypothesis, not a demonstrated deletion in a biological sample.
-No benchmark measurements are plotted in Figure 1.
+No benchmark measurements are plotted in this schematic.
 
 Annotation requires ambiguity coordinates compatible with the input FASTA:
 de novo `primary_ambiguity.tsv` or the local mapping

@@ -1,6 +1,9 @@
 //! Seeded, full-query affine-gap alignment. Reference flanks are free; query ends are not.
 use crate::{io::fastq::Record, kmer};
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
+
+pub(crate) mod profile;
 
 const SEED: usize = 17;
 const BAND: usize = 12;
@@ -9,6 +12,10 @@ const NEG: f64 = -1e100;
 const GAP_OPEN: f64 = -8.0;
 const GAP_EXTEND: f64 = -2.0;
 
+pub(crate) fn edit_budget(length: usize) -> usize {
+    (length / 10).max(3)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Hit {
     pub start: usize,
@@ -16,12 +23,16 @@ pub(crate) struct Hit {
     pub reverse: bool,
     pub logp: f64,
     pub edits: usize,
+    pub traceback: Option<Arc<profile::Traceback>>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub(crate) struct Placements {
     pub hits: Vec<Hit>,
     pub exhausted: bool,
+    /// Complete only in the declared endpoint/edit domain, not across all
+    /// possible alignments or ungenerated assembly structures.
+    pub complete: bool,
 }
 
 struct OrientedQuery {
@@ -37,6 +48,8 @@ pub(crate) struct Prepared {
     orientations: [OrientedQuery; 2],
     windows: [HashMap<Vec<u8>, Vec<Hit>>; 2],
     rescues: [HashMap<Vec<u8>, Vec<Hit>>; 2],
+    profiles: [HashMap<profile::Key, Placements>; 2],
+    subproblems: [profile::Subproblems; 2],
     length: usize,
 }
 impl Prepared {
@@ -53,9 +66,9 @@ impl Prepared {
                 read.quality.clone()
             };
             let mut seeds = Vec::new();
-            kmer::visit(&sequence, Some(&quality), SEED, 10, |p, c| {
-                seeds.push((p, c))
-            });
+            // Seeds propose placements; quality is evidence in emission scores,
+            // not a hidden hard cutoff that can erase every seed in a read.
+            kmer::visit(&sequence, None, SEED, 0, |p, c| seeds.push((p, c)));
             let ideal = sequence
                 .iter()
                 .zip(&quality)
@@ -72,6 +85,8 @@ impl Prepared {
             orientations,
             windows: std::array::from_fn(|_| HashMap::new()),
             rescues: std::array::from_fn(|_| HashMap::new()),
+            profiles: std::array::from_fn(|_| HashMap::new()),
+            subproblems: std::array::from_fn(|_| profile::Subproblems::default()),
             length: read.sequence.len(),
         }
     }
@@ -107,10 +122,17 @@ pub(crate) fn ideal_score(read: &Record) -> f64 {
 }
 
 impl Index {
+    pub(crate) fn circle_length(&self) -> Option<usize> {
+        self.circle_length
+    }
+
     pub fn new(sequence: &[u8], circular: bool, max_read: usize) -> Self {
         let mut expanded = sequence.to_vec();
         if circular && !sequence.is_empty() {
-            expanded.extend((0..max_read + BAND).map(|i| sequence[i % sequence.len()]));
+            expanded.extend(
+                (0..max_read + BAND.max(edit_budget(max_read)))
+                    .map(|i| sequence[i % sequence.len()]),
+            );
         }
         let mut seeds: HashMap<_, Vec<_>> = HashMap::new();
         kmer::visit(&expanded, None, SEED, 0, |p, code| {
@@ -199,6 +221,7 @@ impl Index {
                             reverse,
                             logp: query.ideal,
                             edits: 0,
+                            traceback: None,
                         });
                     }
                 }
@@ -254,6 +277,165 @@ impl Index {
         result
             .hits
             .retain(|h| h.edits <= (prepared.length / 10).max(3) && h.logp >= best - 16.0);
+        result
+    }
+}
+
+impl Index {
+    fn profile_window(
+        &self,
+        prepared: &mut Prepared,
+        left: usize,
+        right: usize,
+        reverse: bool,
+        constraint: Option<profile::Constraint>,
+    ) -> Placements {
+        let left = left.min(self.sequence.len());
+        let right = right.min(self.sequence.len());
+        if left >= right {
+            return Placements {
+                complete: true,
+                ..Placements::default()
+            };
+        }
+        let orientation = usize::from(reverse);
+        let query = &prepared.orientations[orientation];
+        let key = profile::Key {
+            target: self.sequence[left..right].to_vec(),
+            constraint: constraint.map(|c| profile::Constraint {
+                target: c.target - left,
+                ..c
+            }),
+            edits: edit_budget(prepared.length),
+        };
+        let cache = &mut prepared.profiles[orientation];
+        let mut found = if let Some(found) = cache.get(&key) {
+            found.clone()
+        } else {
+            let found = profile::fit_cached(
+                &query.sequence,
+                &query.quality,
+                &key.target,
+                key.constraint,
+                key.edits,
+                profile::MAX_CELLS,
+                &mut prepared.subproblems[orientation],
+            );
+            // Per-fragment caches remain bounded when many hypotheses differ.
+            if cache.len() < 32 {
+                cache.insert(key, found.clone());
+            }
+            found
+        };
+        for hit in &mut found.hits {
+            hit.start += left;
+            hit.end += left;
+            hit.reverse = reverse;
+        }
+        found
+    }
+
+    fn normalize_profiles(&self, found: &mut Placements) {
+        if let Some(n) = self.circle_length {
+            found.hits.retain(|h| h.end - h.start <= n);
+            for hit in &mut found.hits {
+                let shift = hit.start / n * n;
+                hit.start -= shift;
+                hit.end -= shift;
+            }
+        }
+        profile::dedup(found);
+    }
+
+    /// Enumerate all endpoint/edit interpretations of the fixed physical word.
+    /// The chosen query offset and target identity are enforced inside the DP.
+    pub(crate) fn profile_anchor(
+        &self,
+        prepared: &mut Prepared,
+        target: usize,
+        reverse: bool,
+        query: usize,
+        length: usize,
+    ) -> Placements {
+        let mut result = Placements {
+            complete: true,
+            ..Placements::default()
+        };
+        let edits = edit_budget(prepared.length);
+        let n = self.circle_length.unwrap_or(0);
+        let copies: BTreeSet<_> = [target, target + n].into_iter().collect();
+        for target in copies {
+            if target + length > self.sequence.len() {
+                continue;
+            }
+            let left = (target as isize - query as isize - edits as isize).max(0) as usize;
+            let right = target + prepared.length - query + edits;
+            if n > 0 && left >= n {
+                continue;
+            }
+            let found = self.profile_window(
+                prepared,
+                left,
+                right,
+                reverse,
+                Some(profile::Constraint {
+                    query,
+                    target,
+                    length,
+                }),
+            );
+            result.complete &= found.complete;
+            result.exhausted |= found.exhausted;
+            result.hits.extend(found.hits);
+        }
+        self.normalize_profiles(&mut result);
+        result
+    }
+
+    pub(crate) fn profile_around(
+        &self,
+        prepared: &mut Prepared,
+        pivot: &Hit,
+        radius: usize,
+        reverse: bool,
+    ) -> Placements {
+        let mut result = Placements {
+            complete: true,
+            ..Placements::default()
+        };
+        let n = self.circle_length.unwrap_or(0) as isize;
+        let mut windows = BTreeSet::new();
+        for shift in [-n, 0, n] {
+            let lo = (pivot.start as isize - radius as isize + shift).max(0) as usize;
+            let hi = (pivot.end as isize + radius as isize + shift).max(0) as usize;
+            if lo < self.sequence.len() && hi > lo {
+                windows.insert((lo, hi.min(self.sequence.len())));
+            }
+        }
+        for (lo, hi) in windows {
+            let found = self.profile_window(prepared, lo, hi, reverse, None);
+            result.complete &= found.complete;
+            result.exhausted |= found.exhausted;
+            result.hits.extend(found.hits);
+        }
+        self.normalize_profiles(&mut result);
+        result
+    }
+
+    /// Without usable geometry, sequence comparison must either search both
+    /// strands of the whole hypothesis in the edit domain or remain unknown.
+    pub(crate) fn profile_all(&self, prepared: &mut Prepared) -> Placements {
+        let mut result = Placements {
+            complete: true,
+            ..Placements::default()
+        };
+        for reverse in [false, true] {
+            let found = self.profile_window(prepared, 0, self.sequence.len(), reverse, None);
+            result.complete &= found.complete;
+            result.exhausted |= found.exhausted;
+            result.hits.extend(found.hits);
+        }
+        self.normalize_profiles(&mut result);
         result
     }
 }
@@ -355,6 +537,7 @@ fn fitting_candidates(query: &[u8], quality: &[u8], target: &[u8]) -> Vec<Hit> {
                 reverse: false,
                 logp: cell.score,
                 edits: cell.edits,
+                traceback: None,
             })
         })
         .collect();
@@ -373,12 +556,53 @@ fn fitting_candidates(query: &[u8], quality: &[u8], target: &[u8]) -> Vec<Hit> {
 
 /// Trace one accepted placement. Only sequenced target bases with sufficient
 /// quality contribute matching depth; insertions, deletions and mate gaps do not.
+#[cfg(test)]
 pub(crate) fn trace_bases(
     read: &Record,
     hit: &Hit,
     target: &[u8],
     minq: u8,
 ) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    let trace = trace_alignment(read, hit, target, minq);
+    (trace.observed, trace.matching, trace.deletions)
+}
+
+#[derive(Default)]
+pub(crate) struct BaseTrace {
+    pub ambiguous_trace: bool,
+    pub observed: Vec<usize>,
+    pub matching: Vec<usize>,
+    /// Oriented query offset and unfolded target position for known matching bases.
+    pub matching_pairs: Vec<(usize, usize)>,
+    pub ambiguous_contacts: usize,
+    pub deletions: Vec<usize>,
+    /// Reference positions whose preceding base is adjacent in the read too.
+    pub matching_junctions: Vec<usize>,
+}
+
+impl BaseTrace {
+    /// Every target base and every intervening junction must be sequenced in
+    /// one contiguous matching query run. A deletion, insertion, mismatch or
+    /// quality-masked base cannot certify a new sequence adjacency.
+    pub(crate) fn matches_contiguous(&self, start: usize, end: usize) -> bool {
+        !self.ambiguous_trace
+            && end > start
+            && self
+                .matching
+                .iter()
+                .filter(|&&p| (start..end).contains(&p))
+                .count()
+                == end - start
+            && self
+                .matching_junctions
+                .iter()
+                .filter(|&&p| (start + 1..end).contains(&p))
+                .count()
+                == end - start - 1
+    }
+}
+
+pub(crate) fn trace_alignment(read: &Record, hit: &Hit, target: &[u8], minq: u8) -> BaseTrace {
     let query = if hit.reverse {
         kmer::reverse_complement(&read.sequence)
     } else {
@@ -389,14 +613,41 @@ pub(crate) fn trace_bases(
     } else {
         read.quality.clone()
     };
+    if let Some(trace) = &hit.traceback {
+        return certified_trace(&query, &quality, hit, target, minq, trace);
+    }
     if hit.edits == 0 {
-        let positions: Vec<_> = quality
+        let observed: Vec<_> = quality
             .iter()
             .enumerate()
             .filter(|(_, q)| q.saturating_sub(33) >= minq)
             .map(|(i, _)| hit.start + i)
             .collect();
-        return (positions.clone(), positions, Vec::new());
+        let matching_pairs: Vec<_> = observed
+            .iter()
+            .filter_map(|&p| {
+                let q = p - hit.start;
+                (b"ACGT".contains(&query[q]) && target.get(p) == Some(&query[q])).then_some((q, p))
+            })
+            .collect();
+        let matching: Vec<_> = matching_pairs.iter().map(|p| p.1).collect();
+        let matching_junctions = matching
+            .windows(2)
+            .filter_map(|p| (p[1] == p[0] + 1).then_some(p[1]))
+            .collect();
+        let ambiguous_contacts = observed
+            .iter()
+            .filter(|&&p| !b"ACGT".contains(&query[p - hit.start]) || !b"ACGT".contains(&target[p]))
+            .count();
+        return BaseTrace {
+            ambiguous_trace: false,
+            observed,
+            matching,
+            matching_pairs,
+            matching_junctions,
+            ambiguous_contacts,
+            deletions: Vec::new(),
+        };
     }
     let reference = &target[hit.start..hit.end];
     let width = reference.len() + 1;
@@ -443,6 +694,10 @@ pub(crate) fn trace_bases(
     let (mut i, mut j) = (query.len(), reference.len());
     let mut state = choose([previous[0][j], previous[1][j], previous[2][j]]);
     let (mut observed, mut matching, mut deletions) = (Vec::new(), Vec::new(), Vec::new());
+    let mut matching_junctions = Vec::new();
+    let mut matching_pairs = Vec::new();
+    let mut ambiguous_contacts = 0;
+    let mut previous_match = None;
     while i > 0 || j > 0 {
         let from = trace[i * width + j][state] as usize;
         match state {
@@ -452,8 +707,16 @@ pub(crate) fn trace_bases(
                 }
                 if quality[i - 1].saturating_sub(33) >= minq {
                     observed.push(hit.start + j - 1);
-                    if query[i - 1] == reference[j - 1] {
+                    ambiguous_contacts += usize::from(
+                        !b"ACGT".contains(&query[i - 1]) || !b"ACGT".contains(&reference[j - 1]),
+                    );
+                    if b"ACGT".contains(&query[i - 1]) && query[i - 1] == reference[j - 1] {
+                        matching_pairs.push((i - 1, hit.start + j - 1));
                         matching.push(hit.start + j - 1);
+                        if previous_match == Some((i, j)) {
+                            matching_junctions.push(hit.start + j);
+                        }
+                        previous_match = Some((i - 1, j - 1));
                     }
                 }
                 i -= 1;
@@ -476,9 +739,66 @@ pub(crate) fn trace_bases(
         state = from;
     }
     if i > 0 || j > 0 {
-        return (Vec::new(), Vec::new(), Vec::new());
+        return BaseTrace::default();
     }
-    (observed, matching, deletions)
+    BaseTrace {
+        ambiguous_trace: false,
+        observed,
+        matching,
+        matching_pairs,
+        ambiguous_contacts,
+        deletions,
+        matching_junctions,
+    }
+}
+
+fn certified_trace(
+    query: &[u8],
+    quality: &[u8],
+    hit: &Hit,
+    target: &[u8],
+    minq: u8,
+    trace: &profile::Traceback,
+) -> BaseTrace {
+    let mut result = BaseTrace {
+        ambiguous_trace: trace.ambiguous,
+        ..BaseTrace::default()
+    };
+    let (mut q, mut p) = (0, hit.start);
+    let mut previous_match = None;
+    for &step in &trace.steps {
+        match step {
+            0 => {
+                if q >= query.len() || p >= target.len() {
+                    return BaseTrace::default();
+                }
+                if quality[q].saturating_sub(33) >= minq {
+                    result.observed.push(p);
+                    result.ambiguous_contacts +=
+                        usize::from(!b"ACGT".contains(&query[q]) || !b"ACGT".contains(&target[p]));
+                    if b"ACGT".contains(&query[q]) && query[q] == target[p] {
+                        result.matching.push(p);
+                        result.matching_pairs.push((q, p));
+                        if previous_match == Some((q.wrapping_sub(1), p.wrapping_sub(1))) {
+                            result.matching_junctions.push(p);
+                        }
+                        previous_match = Some((q, p));
+                    }
+                }
+                q += 1;
+                p += 1;
+            }
+            1 => q += 1,
+            _ => {
+                result.deletions.push(p);
+                p += 1;
+            }
+        }
+    }
+    if q != query.len() || p != hit.end {
+        return BaseTrace::default();
+    }
+    result
 }
 
 #[cfg(test)]
@@ -493,6 +813,76 @@ mod tests {
         }
     }
     const SEQUENCE: &[u8] = b"GACTACGTGATAGCTGACTGCATGCTAGCTACGTTAGCGATCGTACCGATGCTACGATCGATCATGCATCGTAGCTAGCATGCTACGTACGATCG";
+    #[test]
+    fn unknown_bases_cannot_supply_exact_or_gapped_junction_observations() {
+        let mut target = SEQUENCE.to_vec();
+        target[37] = b'N';
+        let index = Index::new(&target, false, 80);
+        for insertion in [false, true] {
+            let mut query = target[7..80].to_vec();
+            if insertion {
+                query.insert(10, b'C');
+            }
+            let query = read(&query);
+            let placements = index.align(&query);
+            let hit = placements
+                .hits
+                .iter()
+                .max_by(|a, b| a.logp.total_cmp(&b.logp))
+                .unwrap();
+            assert_eq!(hit.edits, usize::from(insertion));
+            let trace = trace_alignment(&query, hit, &index.sequence, 0);
+            assert!(!trace.matching.contains(&37));
+            assert!(!trace.matches_contiguous(30, 45));
+            assert!(trace.ambiguous_contacts > 0);
+            assert!(trace.matches_contiguous(45, 60));
+        }
+    }
+    #[test]
+    fn observed_junction_requires_adjacent_query_and_target_bases() {
+        let index = Index::new(SEQUENCE, false, 80);
+        for mutation in 0..4 {
+            let mut sequence = SEQUENCE[7..80].to_vec();
+            match mutation {
+                1 => {
+                    sequence.remove(30);
+                }
+                2 => sequence.insert(30, b'C'),
+                3 => sequence = kmer::reverse_complement(&sequence),
+                _ => {}
+            }
+            let query = read(&sequence);
+            let placements = index.align(&query);
+            let hit = placements
+                .hits
+                .iter()
+                .max_by(|a, b| a.logp.total_cmp(&b.logp))
+                .unwrap();
+            assert_eq!((hit.start, hit.end), (7, 80));
+            let trace = trace_alignment(&query, hit, &index.sequence, 0);
+            assert_eq!(
+                trace.matches_contiguous(17, 57),
+                mutation == 0 || mutation == 3
+            );
+        }
+    }
+    #[test]
+    fn low_quality_seeds_reach_alignment_and_still_receive_lower_scores() {
+        let index = Index::new(SEQUENCE, false, 80);
+        let high = read(&SEQUENCE[7..80]);
+        let mut low = read(&SEQUENCE[7..80]);
+        low.quality.fill(b'&'); // Q5: previously every 17-mer seed was discarded.
+        let high_hits = index.align(&high);
+        let low_hits = index.align(&low);
+        let hit = |hits: &Placements| {
+            hits.hits
+                .iter()
+                .find(|h| h.start == 7 && h.end == 80 && !h.reverse && h.edits == 0)
+                .map(|h| h.logp)
+                .unwrap()
+        };
+        assert!(hit(&low_hits) < hit(&high_hits));
+    }
     #[test]
     fn full_query_mismatch_insertion_deletion_and_reverse() {
         let index = Index::new(SEQUENCE, false, 80);

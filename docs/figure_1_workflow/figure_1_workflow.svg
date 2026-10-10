@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='utf-8'?>
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" width="183mm" height="205mm" preserveAspectRatio="xMinYMin meet" viewBox="0 0 518.740157 581.102362" version="1.0" fill-rule="evenodd">
-	<title>Figure 1. Native mitochondrial assembly and NCR interpretation with mitovarr</title><desc>Four schematic panels: input contracts; native de novo assembly; reference-guided local assembly; independent gene annotation, tRNA-Pro rotation and NCR analysis. No experimental measurements are depicted.</desc><title>...</title>
+	<title>Detailed method schematic. Native mitochondrial assembly and NCR interpretation with mitovarr</title><desc>Four schematic panels: input contracts; native de novo assembly; reference-guided local assembly; independent gene annotation, tRNA-Pro rotation and NCR analysis. No experimental measurements are depicted.</desc><title>...</title>
 	<desc>...</desc>
 	<clipPath id="clip">
 		<rect x="0" y="0" width="518.740157480315" height="581.1023622047245" />
@@ -11,35 +11,23 @@
 			<g transform="" id="panel_a" inkscape:groupmode="layer" inkscape:label="a - workflow">
 				<text x="11.338582677165356" y="567.1264826073956" style="font-family: Arial-Bold; font-size: 8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1134) scale(1,-1)">a</text>
 				<text x="25.51181102362205" y="567.1264826073956" style="font-family: Arial-Bold; font-size: 7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1134) scale(1,-1)">Input routes and read-evidence scope</text>
-				<rect x="14.173228346456694" y="475.67028804943686" width="99.21259842519686" height="80.91298714242998" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(96%,96%,96%); fill-rule: evenodd;" />
-				<rect x="124.7244094488189" y="475.67028804943686" width="99.21259842519686" height="80.91298714242998" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(96%,96%,96%); fill-rule: evenodd;" />
-				<rect x="235.27559055118112" y="475.67028804943686" width="99.21259842519683" height="80.91298714242998" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(96%,96%,96%); fill-rule: evenodd;" />
+				<rect x="14.173228346456694" y="475.67028804943686" width="153.0708661417323" height="80.91298714242998" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(96%,96%,96%); fill-rule: evenodd;" />
+				<rect x="181.4173228346457" y="475.67028804943686" width="153.07086614173227" height="80.91298714242998" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(96%,96%,96%); fill-rule: evenodd;" />
 				<rect x="360.00000000000006" y="475.67028804943686" width="144.5669291338583" height="80.91298714242998" style="stroke: none; stroke-linecap: butt; stroke-width: 0.5; fill: rgb(96%,96%,96%); fill-rule: evenodd;" />
-				<text x="45.16968869186762" y="543.833349945181" style="font-family: Arial-Bold; font-size: 6.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1087) scale(1,-1)">BAM-baited</text>
-				<text x="33.46219357468012" y="532.0641881790093" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1064) scale(1,-1)">CaenDR mtDNA BAM</text>
-				<text x="29.269713105930123" y="522.0113625037377" style="font-family: Arial; font-size: 5.9px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1044) scale(1,-1)">MT query + mate recovery</text>
-				<path d="M 63.779528,518.823881 L 63.779528,509.751819 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.65;" />
-				<polygon points="63.77953 509.7518, 65.14866 512.5715, 62.41039 512.5715" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
-				<text x="33.49000119186763" y="501.4153294129374" style="font-family: Arial-Bold; font-size: 6.3px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1002) scale(1,-1)">Extracted read pairs</text>
-				<text x="32.66824826218013" y="484.98754111432277" style="font-family: Arial; font-size: 5.8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,969) scale(1,-1)">Validate: extracted pairs</text>
-				<text x="149.01432682547983" y="543.833349945181" style="font-family: Arial-Bold; font-size: 6.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1087) scale(1,-1)">Reference-blind</text>
-				<text x="142.97499577079233" y="532.0641881790093" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1064) scale(1,-1)">Original paired FASTQ</text>
-				<path d="M 148.818898,522.992126 L 199.84252,522.992126 Z" style="stroke: rgb(48%,51%,54%); stroke-linecap: butt; stroke-width: 0.35;" />
-				<path d="M 148.818898,522.992126 L 160.15748,522.992126 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.9;" />
-				<polygon points="160.1575 522.9921, 157.6063 523.9189, 157.6063 522.0653" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
-				<path d="M 199.84252,522.992126 L 188.503937,522.992126 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.9;" />
-				<polygon points="188.5039 522.9921, 191.0551 522.0653, 191.0551 523.9189" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
-				<path d="M 174.330709,518.823881 L 174.330709,509.751819 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.65;" />
-				<polygon points="174.3307 509.7518, 175.6998 512.5715, 172.9616 512.5715" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
-				<text x="149.65058170829232" y="501.4153294129374" style="font-family: Arial-Bold; font-size: 6.3px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1002) scale(1,-1)">All original pairs</text>
-				<text x="142.09086491141733" y="484.98754111432277" style="font-family: Arial; font-size: 5.8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,969) scale(1,-1)">Validate: all original pairs</text>
-				<text x="272.96550792784205" y="543.833349945181" style="font-family: Arial-Bold; font-size: 6.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1087) scale(1,-1)">Seeded</text>
-				<text x="252.05942882627954" y="532.0641881790093" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1064) scale(1,-1)">Original pairs + mt seed</text>
-				<text x="253.07576183409205" y="522.0113625037377" style="font-family: Arial; font-size: 5.9px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1044) scale(1,-1)">Iterative pair recruitment</text>
-				<path d="M 284.88189,518.823881 L 284.88189,509.751819 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.65;" />
-				<polygon points="284.8819 509.7518, 286.251 512.5715, 283.5128 512.5715" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
-				<text x="254.42009777159205" y="501.4153294129374" style="font-family: Arial-Bold; font-size: 6.3px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1002) scale(1,-1)">Recruited read pairs</text>
-				<text x="252.64204601377955" y="484.98754111432277" style="font-family: Arial; font-size: 5.8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,969) scale(1,-1)">Validate: all original pairs</text>
+				<text x="72.09882255013534" y="543.833349945181" style="font-family: Arial-Bold; font-size: 6.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1087) scale(1,-1)">BAM-baited</text>
+				<text x="60.39132743294784" y="532.0641881790093" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1064) scale(1,-1)">CaenDR mtDNA BAM</text>
+				<text x="56.19884696419784" y="522.0113625037377" style="font-family: Arial; font-size: 5.9px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1044) scale(1,-1)">MT query + mate recovery</text>
+				<path d="M 90.708661,518.823881 L 90.708661,509.751819 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.65;" />
+				<polygon points="90.70866 509.7518, 92.0778 512.5715, 89.33953 512.5715" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
+				<text x="60.419135050135345" y="501.4153294129374" style="font-family: Arial-Bold; font-size: 6.3px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1002) scale(1,-1)">Extracted read pairs</text>
+				<text x="59.59738212044785" y="484.98754111432277" style="font-family: Arial; font-size: 5.8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,969) scale(1,-1)">Validate: extracted pairs</text>
+				<text x="246.03637406957432" y="543.833349945181" style="font-family: Arial-Bold; font-size: 6.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1087) scale(1,-1)">Seeded</text>
+				<text x="225.1302949680118" y="532.0641881790093" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1064) scale(1,-1)">Original pairs + mt seed</text>
+				<text x="226.14662797582432" y="522.0113625037377" style="font-family: Arial; font-size: 5.9px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1044) scale(1,-1)">Iterative pair recruitment</text>
+				<path d="M 257.952756,518.823881 L 257.952756,509.751819 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.65;" />
+				<polygon points="257.9528 509.7518, 259.3219 512.5715, 256.5836 512.5715" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />
+				<text x="227.49096391332432" y="501.4153294129374" style="font-family: Arial-Bold; font-size: 6.3px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1002) scale(1,-1)">Recruited read pairs</text>
+				<text x="225.71291215551182" y="484.98754111432277" style="font-family: Arial; font-size: 5.8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,969) scale(1,-1)">Validate: all original pairs</text>
 				<text x="402.31176046536666" y="543.833349945181" style="font-family: Arial-Bold; font-size: 6.7px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1087) scale(1,-1)">Mapping assembly</text>
 				<text x="394.8957692544292" y="532.0641881790093" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1064) scale(1,-1)">Matching reference FASTA</text>
 				<text x="400.8354176919292" y="522.0113625037377" style="font-family: Arial; font-size: 6.2px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,1044) scale(1,-1)">+ sorted, indexed BAM</text>
@@ -60,10 +48,9 @@
 				<path d="M 476.220472,501.415329 L 464.598425,501.415329 Z" style="stroke: rgb(83%,36%,0%); stroke-linecap: butt; stroke-width: 0.8;" />
 				<polygon points="464.5984 501.4153, 467.1496 500.4885, 467.1496 502.3422" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(83%,36%,0%); fill-rule: evenodd;" />
 				<text x="393.4435719888042" y="484.98754111432277" style="font-family: Arial; font-size: 5.8px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,969) scale(1,-1)">CaenDR mt.bam or local BAM</text>
-				<path d="M 63.779528,475.670288 L 63.779528,468.804944 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.6;" />
-				<path d="M 174.330709,475.670288 L 174.330709,468.804944 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.6;" />
-				<path d="M 284.88189,475.670288 L 284.88189,468.804944 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.6;" />
-				<path d="M 63.779528,468.804944 L 284.88189,468.804944 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.6;" />
+				<path d="M 90.708661,475.670288 L 90.708661,468.804944 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.6;" />
+				<path d="M 257.952756,475.670288 L 257.952756,468.804944 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.6;" />
+				<path d="M 90.708661,468.804944 L 257.952756,468.804944 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.6;" />
 				<text x="104.48749577079234" y="459.24249975082233" style="font-family: Arial; font-size: 6.1px;fill: rgb(12%,12%,14%); stroke:none;" transform="translate(0,918) scale(1,-1)">Sample FASTQ only; no reference in the assembler</text>
 				<path d="M 130.393701,456.5454 L 130.393701,449.680056 Z" style="stroke: rgb(0%,44%,69%); stroke-linecap: butt; stroke-width: 0.65;" />
 				<polygon points="130.3937 449.6801, 131.7628 452.4998, 129.0246 452.4998" style="stroke: none; stroke-linecap: butt; stroke-width: 1; fill: rgb(0%,44%,69%); fill-rule: evenodd;" />

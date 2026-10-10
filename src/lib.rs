@@ -15,8 +15,8 @@ pub mod denovo;
 pub mod io;
 pub mod kmer;
 mod mapping;
+pub mod mapping_assembly;
 pub mod pileup;
-pub mod polish;
 pub mod repeat;
 pub mod report;
 mod subsample;
@@ -49,7 +49,7 @@ pub fn run(cli: cli::Cli) -> Result<bool> {
         Commands::AssembleDenovo(a) => &a.out,
         Commands::AssembleBaited(a) => &a.out,
         Commands::AssembleSeeded(a) => &a.assembly.out,
-        Commands::Polish(a) => &a.out,
+        Commands::AssembleMapping(a) => &a.out,
         Commands::Annotate(a) => &a.out,
     }
     .clone();
@@ -105,7 +105,7 @@ pub fn run(cli: cli::Cli) -> Result<bool> {
                 false,
             )
         }
-        Commands::Polish(args) => polish::polish(&args),
+        Commands::AssembleMapping(args) => mapping_assembly::assemble(&args),
         Commands::Annotate(args) => annotation::run(&args),
     })();
     if let Err(error) = &result {

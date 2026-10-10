@@ -1,11 +1,13 @@
 //! Reference-guided local assembly. No reference enters the de novo workflow.
+mod coverage;
 mod discovery;
 mod graph;
+mod legacy;
 mod scoring;
 pub(crate) use discovery::Signals;
 
 use crate::{
-    cli::{GraphSettings, Limits, PolishArgs, Reads},
+    cli::{GraphSettings, Limits, MappingArgs, Reads},
     consensus::ConsensusResult,
     denovo::pairs,
     io::fasta::write_consensus_fasta,
@@ -25,6 +27,7 @@ struct Alternative {
     sequence: Vec<u8>,
     support: u32,
 }
+#[derive(Clone)]
 struct Patch {
     start: usize,
     end: usize,
@@ -34,6 +37,7 @@ struct Patch {
 
 pub(crate) struct ResultAssembly {
     pub sequence: Vec<u8>,
+    pub maximum_sequence: Option<Vec<u8>>,
     pub resolved: bool,
     pub unresolved_ambiguity: usize,
     pub report: Value,
@@ -101,13 +105,32 @@ fn segments(start: usize, len: usize, total: usize) -> Vec<Value> {
     parts
 }
 
+fn count_unresolved_repeats(
+    called: &ConsensusResult,
+    ambiguity: &[AmbiguityInterval],
+    resolved_mask: &[bool],
+) -> usize {
+    ambiguity
+        .iter()
+        .filter(|a| {
+            let start = called.reference_offsets[a.start];
+            let end = called.reference_offsets[a.end + 1];
+            resolved_mask[start..end].iter().any(|resolved| !*resolved)
+        })
+        .count()
+}
+
 pub(crate) fn assemble(
-    args: &PolishArgs,
+    args: &MappingArgs,
     called: &ConsensusResult,
     ambiguity: &[AmbiguityInterval],
     signals: Signals,
     contig: &str,
 ) -> Result<ResultAssembly> {
+    ensure!(
+        !args.coverage_layout || args.deep_validation,
+        "coverage layouts require --deep-validation"
+    );
     ensure!(
         (15..=31).contains(&args.local_k)
             && args.local_max_span > 2 * args.local_k
@@ -140,6 +163,8 @@ pub(crate) fn assemble(
     let backbone = rotate(&called.sequence, cut);
     let graph = Graph::build(&reads, args.local_k, args.min_baseq, args.max_records)?;
     let settings = GraphSettings {
+        coverage_layout: false,
+        multi_k_layout: false,
         k: args.local_k,
         min_kmer_count: 3,
         max_error_fraction: 0.2,
@@ -161,14 +186,27 @@ pub(crate) fn assemble(
         .filter(|s| s.len() >= 31)
         .map(|s| s.to_vec())
         .collect();
-    let training = pairs::estimate_sequences(training_sequences, &reads, &settings, &limits)?;
+    let training = if args.deep_validation {
+        pairs::estimate_sequences(training_sequences, &reads, &settings, &limits)?
+    } else {
+        pairs::Training {
+            model: None,
+            max_read: graph.max_read,
+            report: json!({"status":"not_run_fast_consensus","reason":"fragment model is only needed for deep structural scoring"}),
+        }
+    };
     let mut gfa = BufWriter::new(File::create(args.out.join("local_assembly.gfa"))?);
     writeln!(gfa, "H\tVN:Z:1.0")?;
     let mut events = BufWriter::new(File::create(args.out.join("structural_variants.tsv"))?);
     writeln!(events,"locus\tref_window_start\tref_window_end\twraps_origin\tbaseline_length\tselected_length\tdelta\tstatus\tselected_candidate\treason")?;
     let mut reports = Vec::new();
     let mut fallback_graphs = HashMap::<usize, Graph>::new();
+    let mut cross_k_graphs = None;
     let mut patches = Vec::<Patch>::new();
+    let mut coverage_choices = Vec::<coverage::WindowChoices>::new();
+    let mut legacy_graphs = HashMap::<usize, Graph>::new();
+    let mut legacy_patches = Vec::new();
+    let mut legacy_read_patches = Vec::new();
     let mut resolved_mask = vec![false; backbone.len()];
     let mut previous_end = 0;
     let mut evaluated_intervals = Vec::new();
@@ -198,20 +236,34 @@ pub(crate) fn assemble(
         previous_end = end;
         evaluated_intervals[number] = (start, end);
         let baseline = backbone[start..end].to_vec();
-        let mut search = graph.paths(
-            &baseline[..graph.k],
-            &baseline[baseline.len() - graph.k..],
-            args.local_max_span,
-            args.local_max_paths,
-            args.min_depth,
-        );
-        let mut proposals = vec![
-            json!({"k":graph.k,"paths":search.paths.len(),"states":search.states,"limits":search.limits}),
-        ];
+        let mut search = if args.deep_validation {
+            graph.paths(
+                &baseline[..graph.k],
+                &baseline[baseline.len() - graph.k..],
+                args.local_max_span,
+                args.local_max_paths,
+                args.min_depth,
+            )
+        } else {
+            graph::Search::default()
+        };
+        let mut proposals = if args.deep_validation {
+            vec![
+                json!({"k":graph.k,"paths":search.paths.len(),"states":search.states,"limits":search.limits}),
+            ]
+        } else {
+            Vec::new()
+        };
+        let mut legacy_origins = HashMap::<Vec<u8>, Vec<usize>>::new();
+        if args.best_effort {
+            for (sequence, _) in &search.paths {
+                legacy_origins.insert(sequence.clone(), vec![graph.k]);
+            }
+        }
         // Smaller k can bridge a coverage break. Keep the original full flanks,
         // pool all proposed spellings before scoring, and retain every limit.
         // No reference bases are supplied to a gap: sequences come from FASTQ.
-        if search.paths.is_empty() && search.limits.is_empty() {
+        if args.deep_validation && search.paths.is_empty() && search.limits.is_empty() {
             for k in [21, 15].into_iter().filter(|&k| k < graph.k) {
                 if let std::collections::hash_map::Entry::Vacant(entry) = fallback_graphs.entry(k) {
                     entry.insert(Graph::build(&reads, k, args.min_baseq, args.max_records)?);
@@ -225,6 +277,11 @@ pub(crate) fn assemble(
                     args.min_depth,
                 );
                 proposals.push(json!({"k":k,"paths":extra.paths.len(),"states":extra.states,"limits":extra.limits}));
+                if args.best_effort {
+                    for (sequence, _) in &extra.paths {
+                        legacy_origins.entry(sequence.clone()).or_default().push(k);
+                    }
+                }
                 search.states += extra.states;
                 search.low_support_edges_excluded += extra.low_support_edges_excluded;
                 search.limits.extend(extra.limits);
@@ -287,7 +344,20 @@ pub(crate) fn assemble(
             )?;
         }
         fasta.flush()?;
-        let evaluation = if search.limits.is_empty() {
+        let evaluation = if !args.deep_validation {
+            scoring::Evaluation {
+                selected: None,
+                report: json!({"status":"unresolved","reason":"structural_validation_deferred",
+                    "scoring_status":"not_run_fast_consensus",
+                    "selected_candidate":null,"best_candidate":null,"best_candidates":null,
+                    "common_fragments":null,"shared_unique_anchor_kmers":null,
+                    "unscored_fragments":null,"unknown_reasons":null,
+                    "candidates":alternatives.iter().enumerate().map(|(i,p)|json!({
+                        "candidate":i,"length":p.sequence.len(),"minimum_kmer_fragments":p.support,
+                        "score":null,"junction_fragments":null,"strong_votes_against":null
+                    })).collect::<Vec<_>>() }),
+            }
+        } else if search.limits.is_empty() {
             scoring::evaluate(
                 &backbone,
                 start,
@@ -297,6 +367,8 @@ pub(crate) fn assemble(
                 training.model.as_ref(),
                 graph.max_read,
                 args,
+                None,
+                None,
             )?
         } else {
             // An incomplete search cannot select a replacement. Preserve its
@@ -313,6 +385,52 @@ pub(crate) fn assemble(
                         "score":null,"junction_fragments":null,"strong_votes_against":null
                     })).collect::<Vec<_>>() }),
             }
+        };
+        let inferred = if args.coverage_layout && evaluation.selected.is_none() {
+            Some(coverage::infer(
+                args,
+                &reads,
+                &backbone,
+                start,
+                end,
+                locus,
+                &graph,
+                &mut fallback_graphs,
+                training.model.as_ref(),
+                &mut cross_k_graphs,
+            )?)
+        } else {
+            None
+        };
+        let legacy_inferred = if args.best_effort && !args.deep_validation {
+            Some(legacy::fill(
+                args,
+                &reads,
+                &backbone,
+                start,
+                end,
+                locus,
+                &mut legacy_graphs,
+            )?)
+        } else if args.best_effort && evaluation.selected.is_none() {
+            let reference_len = called.reference_offsets.len() - 1;
+            let target_len = (ref_end + reference_len - ref_start) % reference_len + 1;
+            Some(legacy::infer(
+                args,
+                &reads,
+                &backbone,
+                start,
+                end,
+                target_len,
+                locus,
+                &graph,
+                &mut legacy_graphs,
+                &alternatives,
+                &legacy_origins,
+                training.model.as_ref(),
+            )?)
+        } else {
+            None
         };
         if let Some(selected) = evaluation.selected {
             for p in start..end {
@@ -341,6 +459,27 @@ pub(crate) fn assemble(
             evaluation.report["reason"].as_str().unwrap()
         )?;
         let mut entry = evaluation.report;
+        if let Some(inferred) = legacy_inferred {
+            if let Some(patch) = inferred.length_preferred {
+                legacy_patches.push(patch);
+            }
+            if let Some(patch) = inferred.read_preferred {
+                legacy_read_patches.push(patch);
+            }
+            entry["legacy_bridge"] = inferred.report;
+        }
+        if let Some(inferred) = inferred {
+            if !inferred.choices.is_empty() {
+                coverage_choices.push(coverage::WindowChoices {
+                    start,
+                    end,
+                    locus,
+                    choices: inferred.choices,
+                    mean: inferred.mean,
+                });
+            }
+            entry["coverage_layout"] = inferred.report;
+        }
         if let Some(selected) = evaluation.selected.filter(|&i| i != 0) {
             let alt = &alternatives[selected].sequence;
             let prefix = baseline.iter().zip(alt).take_while(|(a, b)| a == b).count();
@@ -426,6 +565,22 @@ pub(crate) fn assemble(
         (position as isize + shift) as usize
     };
     for (i, report) in reports.iter_mut().enumerate() {
+        if !args.deep_validation {
+            report["scoring_status"] = json!("not_run_fast_consensus");
+            for field in [
+                "best_candidate",
+                "best_candidates",
+                "selected_candidate",
+                "common_fragments",
+                "unscored_fragments",
+                "unknown_reasons",
+                "shared_unique_anchor_kmers",
+            ] {
+                report[field] = Value::Null;
+            }
+            report["search"] =
+                json!({"status":"not_run_fast_consensus","states":null,"limits":null});
+        }
         let (start, end) = evaluated_intervals[i];
         if report.get("output_segments").is_none() {
             report["output_segments"] = json!(segments(
@@ -449,20 +604,52 @@ pub(crate) fn assemble(
         }
     }
     uncertainty.flush()?;
-    let unresolved_ambiguity = ambiguity
-        .iter()
-        .filter(|a| {
-            let start = called.reference_offsets[a.start - 1];
-            let end = called.reference_offsets[a.end];
-            resolved_mask[start..end].iter().any(|resolved| !*resolved)
-        })
-        .count();
-    let resolved = reports.iter().all(|r| r["status"] == "resolved");
+    let unresolved_ambiguity = count_unresolved_repeats(called, ambiguity, &resolved_mask);
+    let resolved = args.deep_validation && reports.iter().all(|r| r["status"] == "resolved");
+    let (legacy_bridge, maximum_sequence) = if args.best_effort {
+        let (report, maximum) = legacy::write_hypotheses(
+            args,
+            &backbone,
+            cut,
+            contig,
+            resolved && unresolved_ambiguity == 0 && !sequence.contains(&b'N'),
+            &patches,
+            &legacy_patches,
+            &legacy_read_patches,
+            &evaluated_intervals,
+            &reports,
+        )?;
+        (report, Some(maximum))
+    } else {
+        (json!({"enabled":false,"status":"disabled"}), None)
+    };
+    let coverage_layout = if args.coverage_layout {
+        let (coverage_patches, joint) = coverage::joint_select(
+            args,
+            &backbone,
+            &graph,
+            &patches,
+            &coverage_choices,
+            &mut reports,
+        )?;
+        coverage::write_layout(
+            args,
+            &backbone,
+            cut,
+            coverage_patches,
+            &evaluated_intervals,
+            &reports,
+            joint,
+        )?
+    } else {
+        json!({"enabled":false,"status":"disabled"})
+    };
     let report = json!({"schema":"mitovar-rust.mapping-local.v1","workflow":"reference_guided_local_assembly",
+        "validation_mode":if args.deep_validation{"deep_validation"}else{"fast_consensus"},
         "r1":reads.r1.canonicalize()?,"r2":reads.r2.canonicalize()?,"read_scope":"provided complete pairs; may be mt-bam-extracted, not assumed whole-sample",
         "discovery_signals":reasons,"named_pairs":graph.pairs,"sample_kmers":graph.counts.len(),"weak_graph_edges_removed":graph.weak_edges_removed,"fragment_model":training.report,
         "parameters":{"k":graph.k,"minimum_kmer_fragments":3,"minimum_path_kmer_fragments":args.min_depth,"minimum_junction_fragments":3,"breakpoint_cluster_width":7,"minimum_breakpoint_depth_fraction":0.05,"weak_edge_filter":"support < 0.02 of strongest outgoing edge, independent of absolute depth","max_span":args.local_max_span,"max_paths":args.local_max_paths,"max_states":200000,"max_visits_per_node":4,"max_kmers":2000000,"fallback_k":[21,15],"fallback_rule":"only when main graph has no path and no search limit; retain full main-k flanks; pool and jointly score proposals"},
-        "windows":reports,"applied_replacements":patches.len(),"all_windows_resolved":resolved,"remaining_repeat_intervals":unresolved_ambiguity,
+        "windows":reports,"applied_replacements":patches.len(),"all_windows_resolved":resolved,"remaining_repeat_intervals":unresolved_ambiguity,"coverage_layout":coverage_layout,"legacy_bridge":legacy_bridge,
         "internal_rotation_baseline_offset":cut,"output_origin_shifted_to_supported_anchor":shifted_origin,
         "coordinate_system":"one-based inclusive; baseline_segments refer to reference_candidate.fasta; output_segments refer to candidate.fasta; pileup TSVs remain reference-based",
         "limitations":["local candidates use the reference/pileup backbone outside each window","candidate windows are scored independently; distant variants are not phased","no claim of whole-genome circularity or exhaustive SV discovery","input FASTQ may omit reads not recovered by the upstream BAM extraction"],
@@ -470,8 +657,75 @@ pub(crate) fn assemble(
     crate::write_json(&directory.join("report.json"), &report)?;
     Ok(ResultAssembly {
         sequence,
+        maximum_sequence,
         resolved,
         unresolved_ambiguity,
         report,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        consensus::{finalize_consensus, ChosenIndel, ConsensusDraft, IndelCallKind},
+        pileup::IndelStats,
+    };
+
+    #[test]
+    fn repeat_ambiguity_resolution_checks_all_projected_bases() {
+        let mut indels = vec![None; 6];
+        for (pos, kind) in [
+            (1, IndelCallKind::Insertion("TT".into())),
+            (3, IndelCallKind::Deletion(1)),
+        ] {
+            indels[pos] = Some(ChosenIndel {
+                kind,
+                stats: IndelStats::default(),
+                frac: 1.0,
+            });
+        }
+        let called = finalize_consensus(ConsensusDraft {
+            base_calls: b"ACGTAC".to_vec(),
+            indels,
+            variants: vec![],
+            coverage: vec![],
+            uncertainty: vec![],
+            base_votes: vec![],
+        });
+        assert_eq!(called.sequence, b"ACTTGTC");
+        // Include the origin, an insertion at the inclusive endpoint, a deleted
+        // interval with no surviving bases, and the final reference base.
+        for (start, end, expected) in [
+            (0, 0, 0..1),
+            (1, 1, 1..4),
+            (1, 3, 1..6),
+            (4, 4, 6..6),
+            (5, 5, 6..7),
+            (0, 5, 0..7),
+        ] {
+            let ambiguity = [AmbiguityInterval {
+                start,
+                end,
+                len: end - start + 1,
+                triggers: "low_mapq|depth_anomaly".into(),
+                median_mapq: 0.0,
+                sec_supp_frac: 0.0,
+                depth_ratio: 0.0,
+                mean_entropy: 0.0,
+                action: "strict_filtering".into(),
+            }];
+            let mut resolved = vec![true; called.sequence.len()];
+            assert_eq!(count_unresolved_repeats(&called, &ambiguity, &resolved), 0);
+            for pos in 0..resolved.len() {
+                resolved[pos] = false;
+                assert_eq!(
+                    count_unresolved_repeats(&called, &ambiguity, &resolved),
+                    usize::from(expected.contains(&pos)),
+                    "reference {start}..={end}, unresolved candidate base {pos}"
+                );
+                resolved[pos] = true;
+            }
+        }
+    }
 }

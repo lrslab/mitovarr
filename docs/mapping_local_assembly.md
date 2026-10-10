@@ -1,17 +1,71 @@
-# Reference-guided local NCR assembly
+# Mapping assembly and local reconstruction
 
-This optional stage follows ordinary
+`assemble-mapping` performs mapping assembly from a matching reference FASTA
+and an existing coordinate-sorted, indexed BAM. Its baseline is a
+fragment-aware pileup consensus. `--local-assembly` defaults to fast consensus
+from the pileup and all supplied matching paired FASTQ. It writes the available
+sequence and uncertainty without full structural scoring. Add `--deep-validation`
+to use the previous local search and scoring workflow. See the
+[mapping assembly examples](README.md#mapping-assembly).
+
+## Fast consensus (default)
+
+Build the sample graph from every supplied complete pair, with the existing
+quality filters and record limits. Preserve called bases, and attempt only
+sample-supported N fills at the existing span using the masked-span method
+below. Graphs at smaller k are built lazily when a supported anchored window
+contains N. A window without N does not trigger bridge searches. Full path
+enumeration, empirical fragment-model fitting, alternative-length bridge
+searches and paired-fragment comparisons are deferred.
+
+Fast local mode enables best-effort output automatically; the existing
+`--best-effort` flag is still accepted. It writes `consensus.fasta` and
+`maximum_consensus.fasta`, with `maximum_consensus.ambiguity.tsv`, and exits 0
+when the output is written. `candidate.fasta` retains the pileup sequence and
+`structural_ambiguity.tsv` describes its suspect regions.
+
+Reports say `validation_mode=fast_consensus`; each suspect window has
+`scoring_status=not_run_fast_consensus`. Scores, best-candidate fields, fragment
+counts and unknown-fragment counts are null because they were not measured.
+This is separate from a measured zero or a search-limit failure. All suspect
+regions remain unresolved, including any filled region. Fast mode always has
+`strict_validation_passed=false`, `final_published=false` and
+`circularity_verified=false`, even for an N-free sequence.
+
+`local_assembly/locus_N.gap_fill.fasta` retains the fixed-span fill proposals when
+available. Fast mode does not write paired-fragment diagnostic gzip files or
+read-preferred structural alternatives. `legacy_bridge` report fields retain
+their historical names for output compatibility; their `fixed_span_gap_fill`
+method and deferred comparison status identify fast fills.
+
+## Deep structural validation (opt-in)
+
+Add `--deep-validation` and choose a new output directory to enumerate local
+structures and run the full paired-fragment comparison. Add `--best-effort` to
+retain a primary even when this validation fails. Mapping `--coverage-layout`
+requires `--deep-validation`; `--multi-k-layout` still requires coverage layouts.
+
+An unresolved NCR1 does not prevent retaining `candidate.fasta` and evaluating
+the rest of the sequence. `sequence_output` reports this availability separately
+from strict completion. Use [independent gene checks](partial_results.md) with
+the matching structural uncertainty. Optional proposal methods below retain
+strict replacement gates and complete-output claims.
+
+Deep validation follows ordinary
 BAM pileup consensus. The reference locates suspect windows and flanks, while
 paired FASTQ supplies every graph edge and every inserted base. This is a
-reference-guided workflow, separate from reference-blind and BAM-baited de novo.
+reference-guided workflow, separate from BAM-baited and seeded de novo assembly.
 
-When graph enumeration reaches a resource limit, candidate FASTA/GFA and path
+When ordinary graph enumeration reaches a resource limit, candidate FASTA/GFA and path
 support are retained, but the ineligible subset is not scored. The window has
 `scoring_status=not_run_graph_search_limit`; fragment counts, scores, junction
 counts and best-candidate fields are JSON `null` (unmeasured). An exhaustive
 bounded search uses `scoring_status=evaluated`. Skipping an ineligible subset
 does not make an incomplete search resolved or imply that the sample lacks
 supporting reads.
+
+The separate optional `--best-effort` and `--coverage-layout` comparisons
+can score hypotheses from incomplete searches without selecting strict replacements.
 
 1. Collect named-fragment breakpoint evidence while reading BAM. Combine soft
    clips, large CIGAR indels, discordant mate endpoints and unresolved consensus
@@ -36,8 +90,8 @@ supporting reads.
    multiply their contribution simply because a candidate contains more copies.
    Require read-supported connections on both sides of a replacement. A contraction
    of at least `--local-k` bases additionally requires three named fragments
-   that each observe both unique unchanged 21-bp flanks in quality-filtered
-   sequence, with a compatible joint placement (one spanning read or usable
+   that each observe both unique unchanged 21-bp flanks in sequence passing
+   the optional base-quality cutoff, with a compatible joint placement (one spanning read or usable
    paired-fragment geometry). The nearest qualifying flanks must be unique in
    every whole-contig candidate. Separate repeat-internal junction counts are
    insufficient to establish contraction length, particularly against an
@@ -56,6 +110,75 @@ No external assembler/mapper, hashes, second baiting pass or reference-filled
 sequence is introduced. A bounded short-read search cannot guarantee resolution
 of indistinguishable long repeat copies.
 
+## Maximum consensus and legacy bridges
+
+Fast local mode and deep mode with `--best-effort` prioritize a usable primary
+consensus. Unresolved structure, graph limits and a read score favoring the
+N-containing baseline do not prevent writing the maximum consensus. This is
+reference-guided mapping; de novo commands do not accept this flag or a length
+prior. `candidate.fasta` and its strict comparison remain available.
+
+For an anchored window containing N, first search sample FASTQ graphs at
+k=21/17/13/11, up to `--local-k`, for a path at the current backbone length that
+preserves every called A/C/G/T position. Each edge needs at least two named
+pairs. A length-layered dynamic program maximizes summed `log(1 + support)`;
+keep the highest-scoring spelling per node and position, with up to 1,024
+nodes per layer. Length and the called positions constrain the walk. There is
+no fixed repeat-visit ceiling, so six copies are not discarded just because a
+strict traversal allows four. Merged histories and beam pruning are reported.
+The length is a reference-guided prior, not a copy-number measurement.
+
+In deep mode, pool these fills with the legacy sample-edge beam proposals and ordinary
+local candidates. Prefer a full fill preserving called bases and span, then
+paths meeting the ordinary depth threshold, longer graph k and support.
+Otherwise use the legacy preference for the nearest reference interval length.
+Do not change a window that already has no N just to add repeat copies.
+Existing strict replacements outside these windows are retained.
+
+The deep-mode legacy fallback uses complete main-k flanks and k=21/17/13/11 raw
+pair-counted edges. At each k, support starts at `--min-depth` (at least two)
+and may relax through its half/quarter values, three and two, stopping after
+success. Its beam width is 256, state cap 50,000, reverse-reachability cap
+100,000 and retained-path cap eight. Length is bounded by `--local-max-span`
+and target plus `clamp(target,250,2000)/8 + 2*(k-1)`. The primary span fill is
+independent of these repeat-use and legacy traversal limits.
+
+In deep mode, compare up to two structural representatives, including the primary choice,
+plus the unchanged baseline using the existing full-query aligner. Eligibility
+is frozen against the entire generated pool. Scores, junction counts and
+unknown fragments are confidence information, not output gates. All proposals
+remain in local FASTA; scoring a subset does not certify uniqueness.
+
+Outputs:
+
+- `consensus.fasta` and `maximum_consensus.fasta`: the same best-effort primary
+  sequence with the original contig name and explicit best-effort header.
+  When no fill exists, retain the strict sequence, including remaining N.
+- `maximum_consensus.ambiguity.tsv`: uncertainty for that primary sequence.
+  The internal local-assembly rotation is retained; these are not reference
+  coordinates. Supply this TSV when annotating `consensus.fasta`.
+- `candidate.fasta` and `structural_ambiguity.tsv`: the separate strict result.
+- `local_assembly/locus_N.legacy_bridge.fasta`: deep mode's pooled ranked alternatives.
+- `local_assembly/locus_N.legacy_bridge.fragments.jsonl.gz`: deep-mode diagnostic scores;
+  candidate indices are mapped in the window report.
+- `legacy_bridge.fasta` and optional `legacy_bridge.read_preferred.fasta`:
+  proposal and measured-read-preference comparisons, with matching ambiguity
+  files. The read-preferred file requires a unique measured non-baseline best.
+- `legacy_bridge.json` and local window reports: proposals, maximum selection,
+  called-base preservation, traversal limits, scores and output files.
+
+A successful best-effort run exits 0, including when repeat structure remains
+unverified. Top-level `status=best_effort`, `consensus_written=true` and
+`sequence_output.fasta=consensus.fasta` describe availability.
+`strict_validation_passed` and the retained `final_published` field describe the
+old strict validation independently. A complete strict result in deep mode may still have
+`status=complete`. Pipeline failures remain errors and remove `consensus.fasta`.
+
+Every bridge base follows a sample k-mer. Incidental short-k matches can still
+join unrelated reads, and the reference-guided span can imply a wrong repeat
+count. Uncertainty accompanies the consensus; annotation or absence of N does
+not imply validated repeat structure or circularity.
+
 ## CLI
 
 ```bash
@@ -68,13 +191,15 @@ mitovarr annotate --fasta mapping/candidate.fasta --species cbr \
   --assembly-ambiguity mapping/structural_ambiguity.tsv --out annotation
 ```
 
-`assemble-mapping` remains an alias of `polish`. Omitting `--local-assembly`
+In mapping assembly, omitting `--local-assembly`
 preserves ordinary indexed-BAM pileup. Local assembly requires matching paired
 FASTQ; the complete extracted pairs from `fetch-caendr` are suitable. No extra
 recruitment or network download occurs. `--topology circular` is an annotation
 hypothesis and does not establish read-supported closure.
 
-Defaults: `--local-k 31`, `--local-max-span 2000`, `--local-max-paths 128`.
+Defaults: `--local-k 31`, `--local-max-span 2000`, `--local-max-paths 128`,
+`--deep-validation` off, `--scoring-threads 4` (used only in deep mode, capped by available CPUs). Fragment scoring retains all
+reads and reduces results in input order; `--scoring-threads 1` is serial.
 `--max-records` also bounds unique FASTQ pair names in this mode. The sample graph
 has a 2,000,000-kmer cap; each local search has a 200,000-state and four-visits-per-
 node cap. A reached search cap leaves the region unresolved. Increasing a cap
@@ -114,8 +239,12 @@ to 150 bp are merged. The search extends at most 350 bp beyond each side to find
 unique, sample-supported flanks. An internal rotation places the linear cut away
 from suspect regions, so origin-spanning events can be searched in one piece.
 
-Every graph kmer comes from quality-filtered FASTQ and is counted once per named
-pair. Edges need at least three fragments. Outgoing branches below 2% of the
+Every graph kmer comes from sample FASTQ and is counted once per named
+pair. Hard base-quality filtering is disabled by default (`--min-baseq 0`),
+including local graphs, shared-cohort anchors and matching-base support.
+A positive explicit cutoff remains available. Alignment seeds have no hidden
+quality cutoff; quality-dependent alignment scores and BAM vote weights remain.
+Edges need at least three fragments. Outgoing branches below 2% of the
 strongest outgoing edge are excluded from this dominant-consensus graph,
 independent of absolute depth. More strongly supported alternatives remain;
 this filter is not a detector of rare structural haplotypes.
@@ -132,7 +261,7 @@ as a graph edge. The unmodified pileup sequence is always candidate 0.
 
 For every local candidate, substitute that region into the complete pileup
 backbone, retaining all other copies, including the original ND5 or NCR source.
-Freeze one common fragment cohort using a quality-filtered 21-mer on either mate
+Freeze one common fragment cohort using a 21-mer passing the optional base-quality cutoff on either mate
 that occurs once in every whole-contig candidate and occurs in the local region.
 Repeat-only fragments still contribute sample graph sequence but do not become
 independent votes for a copy's location. All candidates score the same cohort.
@@ -156,12 +285,122 @@ heteroplasmy probabilities. SNPs/indels inside the local sequence are selected a
 part of the complete sample path; outside these windows the pileup is retained.
 
 Windows are compared independently on the common pileup backbone. This version
-does not jointly phase distant structural variants or globally re-polish copies
-after several separate replacements. A new source-copy ambiguity outside the
-discovered windows may therefore require a further local analysis. Detection is
-conditional on the reads supplied; no claim of exhaustive SV discovery is made.
+does not jointly phase distant structural variants or globally recompute the
+consensus of homologous copies after several separate replacements. A new
+source-copy ambiguity outside the discovered windows may therefore require a
+further local analysis. Detection is conditional on the reads supplied; no claim
+of exhaustive SV discovery is made.
 
 ## Outputs and coordinates
+
+### Coverage-guided layout hypotheses
+
+`assemble-mapping --local-assembly --deep-validation --coverage-layout` additionally explores
+unresolved windows. This does not change ordinary pileup or strict replacement
+selection. Reference coordinates locate windows; complete supported sample
+flanks and paired FASTQ supply graph sequence. There is no reference-filled gap.
+
+Adding `--multi-k-layout` retains those legacy candidates and adds the shared
+cross-k generator described in [de novo layouts](de_novo.md#additional-cross-k-proposals).
+One cached FASTQ pass counts named-pair support at k=15/21/31/47/63/95/127 for all
+windows. The original local graph and strict replacement search remain unchanged.
+Each additional graph uses the same extended left/right flank context (up to
+126 bases, bounded by the current linearized backbone ends). Both original
+local-k flanks remain in the replacement. Unchanged padding is removed only after
+complete-flank traversal; a path overlapping away that padding is not a valid
+patch for this window. Missing/unsupported flank context is reported, not filled.
+
+The extra searches share one fixed occurrence-depth model at `--local-k`, count
+cross-edge windows from the spelled suffix, and account for other backbone copies.
+Per k/support they use 50,000 additional states split 5,000/22,500/22,500 across
+nearby-exit, coverage and continuous-read-context schedules, with 1,024 pending
+states per queue. Each guided schedule permits `ceil(local-max-paths/2)`
+completions; the seed permits one. The span bound adds only the unchanged padding
+to `--local-max-span`. Graphs retain a two-million-entry limit per k. Legacy search
+costs remain in addition to these budgets.
+
+All k pools merge by sequence before shared-flank recruitment and the existing
+eight-path paired comparison. `source_graphs`, `multi_k_layout` and `searches`
+record sources and limits; extra GFA files are
+`local_assembly/locus_*.multik_k*_min*.gfa`. Agreement across k values is not
+independent read support. Context is a proposal-order heuristic, and this option
+does not verify phase across windows or change strict final publication.
+
+For each window, raw pair-supported graphs at the local k and smaller k=21/15
+contribute a union of complete paths. A nearby-exit search retains a short
+connection before a second search schedules paths by incremental coverage-copy
+residual. Every path must spell the entire original flanks, including in smaller
+k graphs. The raw proposal graph bypasses strict relative edge cleanup; edges
+need three named pairs, with an explicitly recorded one-pair fallback only when
+the ordinary proposal pool is empty. This weak fallback can introduce incorrect
+connections and never supplies evidence for final publication.
+
+Depth counts R1 k-mer window occurrences, retaining repeated offsets and one
+record per named pair. R2 is omitted to avoid overlapping-mate inflation.
+The baseline is the arithmetic mean depth of unique k-mers within 500 bases of
+the two flanks, falling back to unique backbone k-mers if too few are available.
+Local and whole-backbone means are reported. Other homologous copies remain in
+the whole-contig count model. Candidate counts are compared over one fixed union
+of varying k-mers at the main local k, even for paths generated at smaller k.
+Unobserved R1 k-mers and baseline sensitivity are diagnostics, not proof that
+R2 lacks support or that a copy count is identifiable.
+
+Each graph search has two schedules, each capped at 25,000 states and 512 pending
+histories, and a 200,000-node reverse-reachability bound. Length and completion
+bounds use `--local-max-span` and `--local-max-paths`. Coverage exploration caps
+the local use of each canonical k-mer at a generous depth-derived count (up to
+4096), with a minimum of two. This is an exploration heuristic, not a confidence
+interval. A truncated reverse search does not classify unseen nodes as
+unreachable. Limits in one graph never discard paths from another graph.
+
+Up to eight sample paths plus the original pileup baseline are compared by the
+whole-contig paired-fragment scorer. Preserve the coverage incumbent, then
+represent repeat-block count families, distinct traversal orders, and additional
+sequence variants. Report unscored families when the budget is too small.
+Compared paths use a unique-anchor fragment cohort frozen on the full generated
+pool and baseline before shortlisting; read scores are retained even
+though graph search is incomplete. Coverage is not added as a second independent
+likelihood from the same reads. The report keeps baseline preference and
+unscored/exhausted alignments explicit. Its nested subset selection can pass
+local scoring checks but does not resolve the full competitor domain.
+
+A final bounded combination step allocates coverage across all inferred windows
+at once: the same repeat observations cannot fund extra copies independently at
+two loci. Choices within five log-score units of the best scored path in
+each window remain eligible, including the pileup baseline even when graph
+search has not regenerated it or coverage excludes it from the shortlist.
+With `u` omitted fragments, expand this five-unit margin by
+`u * (12 + ln(1 + exp(-12)))`, the maximum possible change in score contrast.
+A path outside that margin stays excluded even when some fragments are unknown.
+With no measured fragments, all shortlisted paths and the baseline remain eligible. The common occurrence model uses
+the arithmetic mean local baseline across windows varying each k-mer. Strict
+replacements and other backbone copies stay fixed in that model. An optimistic
+remaining-copy interval schedules at most 512 configurations; up to 32 full
+layouts are exported. Local paired scores are not summed across windows, and
+this step does not establish phase between windows. Equal-scoring retained
+configurations remain explicit.
+
+Additional outputs:
+
+| File | Meaning |
+| --- | --- |
+| `coverage_layout.fasta` | One inferred whole-contig hypothesis; `final_verified=false` and `circularity_verified=false`. |
+| `coverage_layout_candidates.fasta` | Up to 32 retained combinations in joint coverage order. |
+| `coverage_layout.json` | Selected windows, their searches and paired scores, global copy residual, configuration ties and limits. |
+| `coverage_layout_ambiguity.tsv` | Unresolved windows projected into this hypothesis, accepted by `annotate --assembly-ambiguity`. |
+| `local_assembly/locus_N.coverage.fasta` | All generated sample paths for that window, in coverage order. |
+
+The layout keeps the internal local-search rotation; its coordinates differ
+from `candidate.fasta` and the reference. `baseline_rotation_offset` records
+that cut. Annotation may explicitly assume `--topology circular` and rotate
+the hypothesis after selection, but neither operation verifies closure.
+No selected layout FASTA is written if no unresolved window yields a changed
+choice. `baseline_retained` means proposed paths were compared but the original
+local sequence was kept; their window FASTAs and scores remain available.
+Repeat sampling bias, low-k false connections, missing extracted reads and
+unsearched configurations remain limitations even with a low residual or no N.
+
+### Strict mapping outputs
 
 | File | Meaning |
 | --- | --- |
@@ -170,14 +409,16 @@ conditional on the reads supplied; no claim of exhaustive SV discovery is made.
 | `consensus.fasta` | Published only when every discovered local window is resolved, remaining repeat ambiguity is absent, and the sequence has no N. Circularity remains unverified. |
 | `local_assembly/locus_N.fasta` | Baseline candidate 0 and all generated local alternative sequences, with flanks. |
 | `local_assembly.gfa` | Local candidate-path graph with shared flank nodes and k-bp overlaps; it is not the complete underlying kmer graph. |
-| `structural_variants.tsv` | One row per evaluated window, selected candidate, length delta and unresolved reason. `ref_window_start/end` include flanks, not a minimal breakpoint. |
+| `structural_variants.tsv` | One row per evaluated window, selected candidate, length delta and unresolved reason. `ref_window_start/end` use original reference coordinates and include flanks, not a minimal breakpoint. |
 | `structural_ambiguity.tsv` | Unresolved intervals in final `candidate.fasta` coordinates; accepted by native `annotate --assembly-ambiguity`. |
 | `local_assembly/report.json` | Library model, same-cohort pair scores, junction support, search limits, baseline/final coordinate segments and selected minimal edits. |
 
 Existing `variants.tsv`, `coverage.tsv`, `ambiguity.tsv`, `uncertainty.tsv` and
 `base_votes.tsv` continue to describe the **baseline reference-coordinate pileup**.
 They are not silently relabelled as coverage or alleles on inserted sequence.
-The opt-in main report uses `mitovar-rust.polish.v2`; ordinary polish retains v1.
+Local mapping reports retain `mitovar-rust.polish.v2`; baseline mapping reports
+retain `mitovar-rust.polish.v1`. These are historical format identifiers kept
+for report compatibility; the command is `assemble-mapping`.
 Coordinates are one-based inclusive unless named as offsets. Selected `edit`
 objects trim the common prefix/suffix, report both reference flank positions and
 the actual replacement string, and describe edits relative to the baseline
@@ -199,3 +440,21 @@ by clipped junction reads, an origin-spanning insertion, read-order invariance,
 source-only coverage inflation, a true coverage gap without a deletion junction,
 an indistinguishable tandem-repeat copy count and an explicitly bounded search.
 Discovery regressions cover dispersed high-depth clipping and duplicated names.
+
+Whole-candidate evaluation reports seeded-decoy mate rescue, continuously
+observed junction fragments and mate brackets separately. Contraction flanks
+require actual matching traceback bases in the same placement. See
+[shared layout evidence](paired_paths.md#shared-whole-layout-read-evidence).
+
+Common scoring anchors come from actually retained flanks, including up to 500
+bases of adjoining backbone, rather than the union of changed candidate interiors.
+The same query offset and target word constrain rescue and joint scoring.
+Compressed fragment diagnostics accompany optional coverage comparisons.
+
+Joint coverage selection reports
+`selection=joint_copy_depth_among_retained_local_hypotheses` and
+`pair_compatibility_verified=false`. The reported baseline margin, unknown count
+and `choice_retention_log_margin` distinguish measured opposition from differences
+that omitted fragments could reverse. The bound does not validate structure or
+unsearched candidates. Zero unknowns means completed comparison inside the
+reported alignment domain, not exhaustive assembly search.

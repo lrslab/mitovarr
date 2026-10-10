@@ -2,10 +2,15 @@ use crate::{cli::Reads, io::fastq, kmer};
 use anyhow::{ensure, Result};
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
+mod guided;
+mod legacy;
+mod maximum;
+
 type Code = kmer::Code;
 pub(super) struct Graph {
     pub k: usize,
     pub counts: HashMap<Code, u32>,
+    pub r1_occurrences: HashMap<Code, u64>,
     next: HashMap<Code, Vec<(Code, u8, u32)>>,
     previous: HashMap<Code, Vec<Code>>,
     pub pairs: usize,
@@ -24,6 +29,7 @@ pub(super) fn code(sequence: &[u8]) -> Option<Code> {
 impl Graph {
     pub fn build(reads: &Reads, k: usize, minq: u8, max_pairs: usize) -> Result<Self> {
         let mut counts = HashMap::<Code, u32>::new();
+        let mut r1_occurrences = HashMap::<Code, u64>::new();
         let mut names = HashSet::new();
         let mut max_read = 0;
         fastq::scan_pairs(&reads.r1, &reads.r2, |_, a, b| {
@@ -34,6 +40,11 @@ impl Graph {
                 names.len() <= max_pairs,
                 "local assembly exceeds --max-records named FASTQ pairs"
             );
+            // Keep repeated R1 windows, not just presence within a fragment.
+            // R2 is excluded from copy-depth estimation to avoid mate overlap.
+            kmer::visit(&a.sequence, Some(&a.quality), k, minq, |_, c| {
+                *r1_occurrences.entry(kmer::canonical(c, k)).or_default() += 1;
+            });
             let mut observed = HashSet::new();
             for read in [a, b] {
                 max_read = max_read.max(read.sequence.len());
@@ -85,6 +96,7 @@ impl Graph {
         Ok(Self {
             k,
             counts,
+            r1_occurrences,
             next,
             previous,
             pairs: names.len(),
@@ -448,6 +460,7 @@ mod tests {
         let graph = Graph {
             k: 3,
             counts,
+            r1_occurrences: HashMap::new(),
             next: HashMap::from([
                 (ac, vec![(cc, b'C', 5), (cg, b'G', 20)]),
                 (cc, vec![(cc, b'C', 5), (cg, b'G', 5)]),

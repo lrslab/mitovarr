@@ -3,8 +3,9 @@ name = "mitovarr"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.90"
-description = "Native Rust mitochondrial assembly, consensus, gene prediction and tRNA-Pro rotation"
+description = "Native Rust mitochondrial de novo and mapping assembly, annotation and tRNA-Pro rotation"
 readme = "README.md"
+repository = "https://github.com/lrslab/mitovarr"
 keywords = ["mitochondria", "assembly", "bioinformatics", "bam", "fastq"]
 categories = ["science", "command-line-utilities"]
 include = [
@@ -13,20 +14,29 @@ include = [
     "src/**/*.rs",
     "src/annotation/models/*.json",
     "scripts/fetch_caendr.sh",
+    "scripts/package_release.py",
+    "scripts/smoke_release.sh",
     "tests/mapping_local.rs",
     "tests/native_annotation.rs",
     "tests/native_ncr.rs",
     "tests/native_pipeline.rs",
     "tests/fixtures/annotation/*.fasta",
     "docs/README.md",
+    "docs/publishing.md",
     "docs/cli.md",
     "docs/caendr.md",
     "docs/de_novo.md",
     "docs/paired_paths.md",
     "docs/mapping_local_assembly.md",
     "docs/annotation.md",
+    "docs/partial_results.md",
     "docs/annotation.zh-CN.md",
     "docs/ncr.md",
+    "docs/figures/package_workflow.svg",
+    "docs/figures/package_workflow.png",
+    "docs/figures/package_workflow.pdf",
+    "docs/figures/draw_package_workflow.py",
+    "docs/figures/README.md",
     "docs/figure_1_workflow/README.md",
     "docs/figure_1_workflow/draw_figure_1.py",
     "docs/figure_1_workflow/figure_1_legend.md",

@@ -19,7 +19,7 @@ pub fn open(path: &Path) -> Result<Box<dyn BufRead>> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Record {
     pub header: String,
     pub sequence: Vec<u8>,

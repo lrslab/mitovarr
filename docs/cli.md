@@ -1,23 +1,22 @@
 # mitovarr CLI reference
 
-Captured from `mitovarr 0.1.0` on 2026-09-25. `assemble-mapping` is an alias of `polish`. Current examples are in the [README](../README.md); method details are in the [documentation index](README.md). Regenerate these help sections after changing CLI options or defaults.
+Captured from `mitovarr 0.1.0` on 2026-10-05. Assembly commands are grouped into de novo assembly (`assemble-baited`, `assemble-seeded`) and mapping assembly (`assemble-mapping`). Current examples are in the [README](../README.md); method details are in the [documentation index](README.md). Regenerate these help sections after changing CLI options or defaults.
 
 ## Top-level commands
 
 ```text
-Native Rust mtDNA assembly, consensus, gene prediction and tRNA-Pro rotation
+Native Rust mtDNA de novo and mapping assembly, annotation and tRNA-Pro rotation
 
 Usage: mitovarr <COMMAND>
 
 Commands:
-  fetch-caendr     Fetch mitochondrial reads and available mates from an indexed CaenDR BAM
-  bait             Iteratively recruit original complete read pairs with seed kmers
-  assemble-denovo  Reference-blind graph assembly from original paired FASTQ only
-  assemble-baited  Assemble BAM-extracted paired FASTQ directly; extraction is the baiting step
-  assemble-seeded  Recruit with a seed, then assemble sample reads only; validate on all originals
-  polish           Consensus from an existing coordinate-sorted indexed BAM and reference
-  annotate         Predict mitochondrial genes on frozen candidates; optionally normalize at tRNA-Pro
-  help             Print this message or the help of the given subcommand(s)
+  fetch-caendr      Fetch mitochondrial reads and available mates from an indexed CaenDR BAM
+  bait              Iteratively recruit original complete read pairs with seed kmers
+  assemble-baited   BAM-baited de novo assembly from extracted pairs; no second recruitment
+  assemble-seeded   Seeded de novo assembly; seed recruits reads only, validation uses all originals
+  assemble-mapping  Mapping assembly from a reference and indexed BAM, with optional local reconstruction
+  annotate          Predict and assess genes on frozen candidates independently of NCR1 completeness
+  help              Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help     Print help
@@ -64,50 +63,14 @@ Options:
       --max-rounds <MAX_ROUNDS>  [default: 30]
       --max-pairs <MAX_PAIRS>    [default: 2000000]
       --max-kmers <MAX_KMERS>    Hard limit on distinct kmers in each recruitment or assembly set [default: 2000000]
-      --min-baseq <MIN_BASEQ>    [default: 20]
+      --min-baseq <MIN_BASEQ>    Optional hard base-quality cutoff; 0 disables it. Qualities still inform read scores [default: 0]
   -h, --help                     Print help
-```
-
-## assemble-denovo
-
-```text
-Reference-blind graph assembly from original paired FASTQ only
-
-Usage: mitovarr assemble-denovo [OPTIONS] --r1 <R1> --r2 <R2> --out <OUT>
-
-Options:
-      --r1 <R1>
-
-      --r2 <R2>
-
-      --out <OUT>
-
-      --k <K>
-          Main odd k in 15..127; smaller k=47/31 graphs also propose open-end connections [default: 63]
-      --min-kmer-count <MIN_KMER_COUNT>
-          Minimum pair-record support for a retained kmer (mates counted once) [default: 3]
-      --max-error-fraction <MAX_ERROR_FRACTION>
-          Maximum weak/strong support ratio for tips, weak links and repeat routes; 0 disables all cleanup [default: 0.2]
-      --max-bubble-fraction <MAX_BUBBLE_FRACTION>
-          Maximum weak/strong mean coverage ratio for bounded local bubbles; does not relax repeat routes [default: 0.49]
-      --min-depth <MIN_DEPTH>
-          Minimum quality-filtered matching-base fragment depth after gapped validation [default: 10]
-      --min-junction-fragments <MIN_JUNCTION_FRAGMENTS>
-          Minimum named fragments supporting each repeat bridge and the output junction [default: 3]
-      --max-validation-pairs <MAX_VALIDATION_PAIRS>
-          Hard limit on unique names retained by final read validation [default: 2000000]
-      --max-kmers <MAX_KMERS>
-          Hard limit on distinct kmers in each recruitment or assembly set [default: 2000000]
-      --min-baseq <MIN_BASEQ>
-          [default: 20]
-  -h, --help
-          Print help
 ```
 
 ## assemble-baited
 
 ```text
-Assemble BAM-extracted paired FASTQ directly; extraction is the baiting step
+BAM-baited de novo assembly from extracted pairs; no second recruitment
 
 Usage: mitovarr assemble-baited [OPTIONS] --r1 <R1> --r2 <R2> --out <OUT>
 
@@ -118,6 +81,10 @@ Options:
 
       --out <OUT>
 
+      --coverage-layout
+          Also propose a coverage-fitted circular layout from sample graph paths; never certifies a final assembly
+      --multi-k-layout
+          Add cross-k layout proposals and read-context-guided walks; hypotheses remain unverified
       --k <K>
           Main odd k in 15..127; smaller k=47/31 graphs also propose open-end connections [default: 63]
       --min-kmer-count <MIN_KMER_COUNT>
@@ -127,7 +94,7 @@ Options:
       --max-bubble-fraction <MAX_BUBBLE_FRACTION>
           Maximum weak/strong mean coverage ratio for bounded local bubbles; does not relax repeat routes [default: 0.49]
       --min-depth <MIN_DEPTH>
-          Minimum quality-filtered matching-base fragment depth after gapped validation [default: 10]
+          Minimum matching-base fragment depth after gapped validation [default: 10]
       --min-junction-fragments <MIN_JUNCTION_FRAGMENTS>
           Minimum named fragments supporting each repeat bridge and the output junction [default: 3]
       --max-validation-pairs <MAX_VALIDATION_PAIRS>
@@ -135,7 +102,7 @@ Options:
       --max-kmers <MAX_KMERS>
           Hard limit on distinct kmers in each recruitment or assembly set [default: 2000000]
       --min-baseq <MIN_BASEQ>
-          [default: 20]
+          Optional hard base-quality cutoff; 0 disables it. Qualities still inform read scores [default: 0]
   -h, --help
           Print help
 ```
@@ -143,7 +110,7 @@ Options:
 ## assemble-seeded
 
 ```text
-Recruit with a seed, then assemble sample reads only; validate on all originals
+Seeded de novo assembly; seed recruits reads only, validation uses all originals
 
 Usage: mitovarr assemble-seeded [OPTIONS] --r1 <R1> --r2 <R2> --out <OUT> --seed <SEED>
 
@@ -154,6 +121,10 @@ Options:
 
       --out <OUT>
 
+      --coverage-layout
+          Also propose a coverage-fitted circular layout from sample graph paths; never certifies a final assembly
+      --multi-k-layout
+          Add cross-k layout proposals and read-context-guided walks; hypotheses remain unverified
       --k <K>
           Main odd k in 15..127; smaller k=47/31 graphs also propose open-end connections [default: 63]
       --min-kmer-count <MIN_KMER_COUNT>
@@ -163,7 +134,7 @@ Options:
       --max-bubble-fraction <MAX_BUBBLE_FRACTION>
           Maximum weak/strong mean coverage ratio for bounded local bubbles; does not relax repeat routes [default: 0.49]
       --min-depth <MIN_DEPTH>
-          Minimum quality-filtered matching-base fragment depth after gapped validation [default: 10]
+          Minimum matching-base fragment depth after gapped validation [default: 10]
       --min-junction-fragments <MIN_JUNCTION_FRAGMENTS>
           Minimum named fragments supporting each repeat bridge and the output junction [default: 3]
       --max-validation-pairs <MAX_VALIDATION_PAIRS>
@@ -171,7 +142,7 @@ Options:
       --max-kmers <MAX_KMERS>
           Hard limit on distinct kmers in each recruitment or assembly set [default: 2000000]
       --min-baseq <MIN_BASEQ>
-          [default: 20]
+          Optional hard base-quality cutoff; 0 disables it. Qualities still inform read scores [default: 0]
       --seed <SEED>
 
       --bait-k <BAIT_K>
@@ -184,16 +155,24 @@ Options:
           Print help
 ```
 
-## polish
+## assemble-mapping
 
 ```text
-Consensus from an existing coordinate-sorted indexed BAM and reference
+Mapping assembly from a reference and indexed BAM, with optional local reconstruction
 
-Usage: mitovarr polish [OPTIONS] --ref <REFERENCE> --bam <BAM> --out <OUT>
+Usage: mitovarr assemble-mapping [OPTIONS] --ref <REFERENCE> --bam <BAM> --out <OUT>
 
 Options:
       --local-assembly
-          Reassemble suspect regions from paired FASTQ and compare whole-contig structures
+          Build a sample graph from paired FASTQ and output a fast consensus with unresolved regions
+      --deep-validation
+          Enumerate local structures and compute complete paired-fragment scores (slower; opt-in)
+      --best-effort
+          Retain a usable consensus even if structure remains unresolved; enabled by default in fast local mode
+      --coverage-layout
+          Infer separate coverage-guided local layouts; bounded candidates never certify final structure
+      --multi-k-layout
+          Add cross-k local layout proposals with long flanks and shared read scoring
       --r1 <R1>
           Complete paired reads for local assembly (e.g. the matching fetch-caendr FASTQ)
       --r2 <R2>
@@ -204,6 +183,8 @@ Options:
           Maximum sequence length between local anchors, including the anchors [default: 2000]
       --local-max-paths <LOCAL_MAX_PATHS>
           Maximum local paths; reaching a search limit leaves the window unresolved [default: 128]
+      --scoring-threads <SCORING_THREADS>
+          Worker threads for deep validation; results keep input order. Capped by available CPUs [default: 4]
       --ref <REFERENCE>
 
       --bam <BAM>
@@ -215,7 +196,7 @@ Options:
       --min-mapq <MIN_MAPQ>
           [default: 20]
       --min-baseq <MIN_BASEQ>
-          [default: 20]
+          Optional hard base-quality cutoff; 0 disables it. Quality-weighted voting and scoring remain [default: 0]
       --min-depth <MIN_DEPTH>
           [default: 10]
       --min-snp-frac <MIN_SNP_FRAC>
@@ -243,7 +224,7 @@ Options:
 ## annotate
 
 ```text
-Predict mitochondrial genes on frozen candidates; optionally normalize at tRNA-Pro
+Predict and assess genes on frozen candidates independently of NCR1 completeness
 
 Usage: mitovarr annotate [OPTIONS] --fasta <FASTA> --out <OUT>
 
@@ -274,7 +255,7 @@ Options:
           Orient a circular input so its unique, complete tRNA-Pro starts at base 1 on +
 
       --assembly-ambiguity <ASSEMBLY_AMBIGUITY>
-          Project primary_ambiguity.tsv or structural_ambiguity.tsv from matching FASTA coordinates
+          Project assembly ambiguity intervals from matching FASTA coordinates
 
       --ncr-min-len <NCR_MIN_LEN>
           Minimum intergenic length for NCR intervals; shorter named loci remain in ncr_loci.tsv

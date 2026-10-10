@@ -259,6 +259,131 @@ impl Drop for Temp {
     }
 }
 
+fn quality_run(temp: &Temp, sequence: &[u8], evidence: Option<&str>) -> Value {
+    let input = temp.0.join("partial.fasta");
+    fs::write(
+        &input,
+        format!(
+            ">sample circular=false status=unresolved\n{}\n",
+            String::from_utf8_lossy(sequence)
+        ),
+    )
+    .unwrap();
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_mitovarr"));
+    command
+        .env("PATH", "")
+        .args(["annotate", "--species", "cel", "--fasta"])
+        .arg(&input)
+        .arg("--out")
+        .arg(temp.0.join("annotation"));
+    if let Some(rows) = evidence {
+        let path = temp.0.join("ambiguity.tsv");
+        fs::write(
+            &path,
+            format!("sequence\tstart\tend\tevidence\treason\talternatives\n{rows}"),
+        )
+        .unwrap();
+        command.arg("--assembly-ambiguity").arg(path);
+    }
+    let result = command.output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        load_reference(&temp.0.join("annotation/annotated.fasta"), None)
+            .unwrap()
+            .sequence,
+        sequence
+    );
+    assert!(!temp.0.join("annotation/consensus.fasta").exists());
+    serde_json::from_slice(&fs::read(temp.0.join("annotation/report.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn partial_genome_without_ncr1_retains_independent_gene_quality() {
+    let temp = Temp::new();
+    // The pinned cel fixture's last gene, tRNA-Ala, ends at 13328;
+    // remove the entire terminal NCR1 and keep the molecule explicitly linear.
+    let sequence = reference("cel")[..13328].to_vec();
+    let report = quality_run(&temp, &sequence, None);
+    let r = &report["records"][0];
+    assert_eq!(r["circular_input_assumed"], false);
+    assert_eq!(r["ncr"]["loci"][0]["status"], "unresolved_contig_ends");
+    let q = &r["gene_quality"];
+    assert_eq!(q["status"], "no_detected_gene_issues");
+    assert_eq!(q["expected_models"], 36);
+    assert_eq!(q["annotation_clear_models"].as_array().unwrap().len(), 36);
+    assert_eq!(q["assembly_ambiguity_supplied"], false);
+    assert_eq!(q["read_validation"], "not_performed");
+    let table = fs::read_to_string(temp.0.join("annotation/gene_quality.tsv")).unwrap();
+    assert_eq!(table.lines().count(), 37);
+    assert!(table
+        .lines()
+        .skip(1)
+        .all(|r| r.split('\t').nth(3) == Some("annotation_clear")));
+}
+
+#[test]
+fn gene_quality_retains_coding_missing_copy_and_assembly_problems() {
+    let temp = Temp::new();
+    let p = Panel::bundled(Species::Cel).unwrap();
+    let mut sequence = reference("cel");
+    let prediction = predict(&sequence, &p, false);
+    let start = |name: &str| {
+        prediction
+            .features
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap()
+            .segments[0]
+            .start
+            - 1
+    };
+    let nd4 = start("ND4");
+    sequence[nd4 + 90..nd4 + 93].copy_from_slice(b"TAA");
+    let rrns = start("rrnS");
+    sequence[rrns + 100..rrns + 112].fill(b'N');
+    let ala = prediction
+        .features
+        .iter()
+        .find(|f| f.name == "tRNA-Ala")
+        .unwrap();
+    for s in &ala.segments {
+        sequence[s.start - 1..s.end].fill(b'N');
+    }
+    sequence.extend([b'N'; 30]);
+    sequence.extend(dna(&p, "tRNA-Pro"));
+    let cox1 = start("COX1") + 100;
+    let evidence = format!(
+        "sample\t{cox1}\t{}\tlocal_1\tcompeting_paths\t2\n",
+        cox1 + 10
+    );
+    let report = quality_run(&temp, &sequence, Some(&evidence));
+    let q = &report["records"][0]["gene_quality"];
+    assert_eq!(q["status"], "gene_review_required");
+    for (name, issue) in [
+        ("ND4", "cds_boundary_or_frame_issue"),
+        ("rrnS", "ambiguous_sequence"),
+        ("tRNA-Ala", "not_detected"),
+        ("tRNA-Pro", "multiple_homologous_placements"),
+        ("COX1", "overlaps_assembly_ambiguity"),
+    ] {
+        let g = q["genes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["gene"] == name)
+            .unwrap();
+        assert_eq!(g["status"], "review_required", "{name}: {g}");
+        assert!(
+            g["issues"].as_array().unwrap().contains(&json!(issue)),
+            "{name}: {g}"
+        );
+    }
+}
+
 #[test]
 fn annotation_round_trip_preserves_topology_and_rotates_assembly_uncertainty() {
     let reference = reference("cel");
@@ -354,6 +479,10 @@ fn annotation_round_trip_preserves_topology_and_rotates_assembly_uncertainty() {
             "unresolved_path_alternatives"
         );
         assert_eq!(first["assembly_status"], "not_modified");
+        // Unresolved NCR1 evidence alone does not fail the gene-level checks.
+        assert_eq!(record["gene_quality"]["status"], "no_detected_gene_issues");
+        assert_eq!(record["gene_quality"]["ncr1_required"], false);
+        assert_eq!(record["gene_quality"]["assembly_ambiguity_supplied"], true);
         let annotated = temp.0.join("first/annotated.fasta");
         assert_eq!(
             load_reference(&annotated, None).unwrap().sequence,

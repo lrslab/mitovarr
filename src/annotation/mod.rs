@@ -4,6 +4,7 @@ mod align;
 mod genetic_code;
 pub mod ncr;
 mod output;
+mod quality;
 mod uncertainty;
 
 use crate::cli::{AnnotationArgs, Species, Topology};
@@ -629,6 +630,7 @@ pub fn run(args: &AnnotationArgs) -> Result<bool> {
         let assembly_evidence = uncertainty
             .as_ref()
             .map(|input| uncertainty::project(input, record, i, &rotation, &prediction, &ncr));
+        let gene_quality = quality::assess(&panel, &prediction, assembly_evidence.as_ref());
         results.push(output::Annotated {
             sequence,
             prediction,
@@ -636,6 +638,7 @@ pub fn run(args: &AnnotationArgs) -> Result<bool> {
             circular,
             ncr,
             assembly_evidence,
+            gene_quality,
         });
     }
     output::write(&args.out, &records, &results, &panel)?;
@@ -651,6 +654,7 @@ pub fn run(args: &AnnotationArgs) -> Result<bool> {
                 "prediction": a.prediction,
                 "ncr": a.ncr,
                 "assembly_evidence": a.assembly_evidence,
+                "gene_quality": a.gene_quality,
             })
         })
         .collect();

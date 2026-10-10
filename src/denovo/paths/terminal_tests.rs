@@ -60,6 +60,8 @@ fn short_reads_resolve_a_single_snp_without_a_fragment_distance_model() {
             ],
         };
         let settings = GraphSettings {
+            coverage_layout: false,
+            multi_k_layout: false,
             k,
             min_kmer_count: 3,
             max_error_fraction: 0.2,
@@ -145,6 +147,8 @@ fn multi_k_end_candidates_join_sample_sequence_but_leave_a_real_read_gap_open() 
         outgoing: vec![vec![]; 4],
     };
     let settings = GraphSettings {
+        coverage_layout: false,
+        multi_k_layout: false,
         k: 63,
         min_kmer_count: 3,
         max_error_fraction: 0.2,
@@ -211,6 +215,93 @@ fn multi_k_end_candidates_join_sample_sequence_but_leave_a_real_read_gap_open() 
 }
 
 #[test]
+fn limited_end_search_preserves_proposals_without_closing_the_graph() {
+    let dir =
+        Fixture(std::env::temp_dir().join(format!("mitovar-limited-end-{}", std::process::id())));
+    fs::create_dir_all(&dir.0).unwrap();
+    let backbone = dna(800, 417833);
+    // Reads cover the gap, but its repeat permits an unsearched copy-number
+    // tail. Discovered circle proposals must not become strict graph joins.
+    let genome = [backbone.clone(), vec![b'A'; 70]].concat();
+    let extended = [genome.clone(), genome[..220].to_vec()].concat();
+    let graph = PathGraph {
+        segments: [backbone.clone(), kmer::reverse_complement(&backbone)]
+            .into_iter()
+            .map(|sequence| Segment {
+                sequence,
+                circular: false,
+            })
+            .collect(),
+        outgoing: vec![vec![]; 2],
+    };
+    let settings = GraphSettings {
+        coverage_layout: false,
+        multi_k_layout: false,
+        k: 63,
+        min_kmer_count: 3,
+        max_error_fraction: 0.2,
+        max_bubble_fraction: 0.49,
+        min_depth: 10,
+        min_junction_fragments: 3,
+        max_validation_pairs: 10_000,
+    };
+    let limits = Limits {
+        max_kmers: 100_000,
+        min_baseq: 20,
+    };
+    let reads = Reads {
+        r1: dir.0.join("r1.fq"),
+        r2: dir.0.join("r2.fq"),
+    };
+    let mut r1 = fs::File::create(&reads.r1).unwrap();
+    let mut r2 = fs::File::create(&reads.r2).unwrap();
+    for start in 0..genome.len() {
+        for (mate, writer, sequence) in [
+            (1, &mut r1, extended[start..start + 140].to_vec()),
+            (
+                2,
+                &mut r2,
+                kmer::reverse_complement(&extended[start + 80..start + 220]),
+            ),
+        ] {
+            writeln!(
+                writer,
+                "@f{start}/{mate}\n{}\n+\n{}",
+                String::from_utf8(sequence).unwrap(),
+                "I".repeat(140)
+            )
+            .unwrap();
+        }
+    }
+    drop(r1);
+    drop(r2);
+    let result = resolve(&graph, &reads, &dir.0, &settings, &limits).unwrap();
+    let ends = &result.report["end_assembly"];
+    assert!(!ends["limited_sources"].as_array().unwrap().is_empty());
+    let proposals = fs::read_to_string(dir.0.join("end_bridge_proposals.fasta")).unwrap();
+    assert!(proposals.starts_with('>'));
+    let proposed = ends["proposals"].as_array().unwrap();
+    assert!(proposed.iter().any(|p| p["role"] == "backbone_closure"));
+    assert!(proposed.iter().all(|p| p["join_eligible"] == false));
+    assert_eq!(ends["directed_connections_added"], 0, "{ends}");
+    assert!(
+        fs::read_to_string(dir.0.join("end_bridge_candidates.fasta"))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!fs::read_to_string(dir.0.join("path_graph.gfa"))
+        .unwrap()
+        .lines()
+        .any(|line| line.starts_with("L\t")));
+    assert!(result.supported_cycles.is_empty());
+    assert!(result.candidates.iter().all(|c| !c.circular));
+    assert!(result
+        .primary_candidates
+        .iter()
+        .all(|p| !p.candidate.circular));
+}
+
+#[test]
 fn either_mate_can_anchor_a_fragment_without_counting_it_twice() {
     let dir =
         Fixture(std::env::temp_dir().join(format!("mitovar-either-anchor-{}", std::process::id())));
@@ -230,6 +321,8 @@ fn either_mate_can_anchor_a_fragment_without_counting_it_twice() {
         outgoing: vec![vec![1], vec![], vec![], vec![2]],
     };
     let settings = GraphSettings {
+        coverage_layout: false,
+        multi_k_layout: false,
         k: 63,
         min_kmer_count: 3,
         max_error_fraction: 0.2,
@@ -336,6 +429,8 @@ fn short_terminal_gene_tail_joins_only_with_spanning_fragments() {
         outgoing: vec![vec![1], vec![], vec![1], vec![], vec![3, 5], vec![]],
     };
     let settings = GraphSettings {
+        coverage_layout: false,
+        multi_k_layout: false,
         k: 63,
         min_kmer_count: 3,
         max_error_fraction: 0.2,
@@ -438,6 +533,8 @@ fn spanning_majority_keeps_a_primary_contig_across_a_real_minor_indel() {
         ],
     };
     let settings = GraphSettings {
+        coverage_layout: false,
+        multi_k_layout: false,
         k: 63,
         min_kmer_count: 3,
         max_error_fraction: 0.2,

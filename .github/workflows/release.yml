@@ -1,0 +1,155 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    outputs:
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.90.0
+      - name: Validate release tag and prepare changelog notes
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [[ "$GITHUB_REF_TYPE" != tag || "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "Release requires the tag v$version; branch dispatches are not releases." >&2
+            exit 1
+          fi
+          python3 - "$version" <<'PY'
+          import datetime
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          version = sys.argv[1]
+          lines = Path("CHANGELOG.md").read_text(encoding="utf-8").splitlines()
+          pattern = re.compile(rf"## {re.escape(version)} - (\d{{4}}-\d{{2}}-\d{{2}})")
+          sections = [(i, pattern.fullmatch(line)) for i, line in enumerate(lines)]
+          sections = [(i, match) for i, match in sections if match]
+          if len(sections) != 1:
+              raise SystemExit(f"Expected one dated changelog heading: ## {version} - YYYY-MM-DD")
+          start, match = sections[0]
+          datetime.date.fromisoformat(match.group(1))
+          end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+          body = "\n".join(lines[start + 1:end]).strip()
+          if not body:
+              raise SystemExit("The release changelog section is empty")
+          Path("RELEASE_NOTES.md").write_text(f"# mitovarr {version}\n\n{body}\n", encoding="utf-8")
+          prerelease = "-" in version.split("+", 1)[0]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"prerelease={str(prerelease).lower()}\n")
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mitovarr-release-notes
+          path: RELEASE_NOTES.md
+          if-no-files-found: error
+
+  verify:
+    needs: prepare
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-14
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      TARGET: ${{ matrix.target }}
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88
+        with:
+          toolchain: 1.90.0
+          targets: ${{ matrix.target }}
+      - name: Install musl C toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+      - name: Build release binary
+        run: cargo build --locked --release --bin mitovarr --target "$TARGET"
+      - name: Verify static Linux x86_64 linkage
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        shell: bash
+        run: |
+          set -euo pipefail
+          readelf -l "target/$TARGET/release/mitovarr" > "$RUNNER_TEMP/program-headers.txt"
+          if grep -q INTERP "$RUNNER_TEMP/program-headers.txt"; then
+            echo "The musl binary unexpectedly requires a dynamic loader." >&2
+            exit 1
+          fi
+      - name: Package binary and documentation
+        run: python3 scripts/package_release.py "$TARGET"
+      - name: Smoke-test the unpacked archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="mitovarr-$GITHUB_REF_NAME-$TARGET"
+          unpack=$(mktemp -d)
+          tar -xzf "dist/$archive.tar.gz" -C "$unpack"
+          bash "$unpack/$archive/scripts/smoke_release.sh" \
+            "$unpack/$archive" "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/release-smoke"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mitovarr-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: mitovarr-*
+          path: dist
+          merge-multiple: true
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        with:
+          tag_name: ${{ github.ref_name }}
+          body_path: dist/RELEASE_NOTES.md
+          generate_release_notes: true
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/mitovarr-${{ github.ref_name }}-x86_64-unknown-linux-musl.tar.gz
+            dist/mitovarr-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.gz
+            dist/mitovarr-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz

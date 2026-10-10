@@ -10,7 +10,7 @@ pub(super) struct Cycle {
 
 /// Iterative SCC decomposition, restricted to non-anchor segments. A simple
 /// cycle has exactly one internal successor and predecessor at every node;
-/// entry/exit edges may occur at any node. Complex SCCs use bounded DFS.
+/// entry/exit edges may occur at any node. Complex SCCs use bounded cost-ordered traversal.
 pub(super) fn cycles(graph: &PathGraph, anchors: &HashSet<usize>, overlap: usize) -> Vec<Cycle> {
     let n = graph.segments.len();
     let mut incoming = vec![Vec::new(); n];

@@ -121,31 +121,24 @@ def arc(g, cx, cy, radius, start, end, color=GRAY, width=.8):
     g.add(path)
 
 
-# a: three distinct FASTQ recruitment contracts and the BAM mapping route.
+# a: BAM-baited and seeded de novo inputs, alongside the BAM mapping route.
 a = panel("a", 4, 5.7, "Input routes and read-evidence scope")
-for x in (5, 44, 83):
-    rect(a, x, 10, 35, 33, PAPER)
+for x in (5, 64):
+    rect(a, x, 10, 54, 33, PAPER)
 rect(a, 127, 10, 51, 33, PAPER)
-text(a, 22.5, 15.2, "BAM-baited", 6.7, True, "middle")
-text(a, 22.5, 20, "CaenDR mtDNA BAM", 6.2, anchor="middle")
-text(a, 22.5, 24.1, "MT query + mate recovery", 5.9, anchor="middle")
-arrow(a, 22.5, 25.4, 22.5, 29.1, BLUE)
-text(a, 22.5, 32.5, "Extracted read pairs", 6.3, True, "middle")
-text(a, 22.5, 39.2, "Validate: extracted pairs", 5.8, anchor="middle")
+text(a, 32, 15.2, "BAM-baited", 6.7, True, "middle")
+text(a, 32, 20, "CaenDR mtDNA BAM", 6.2, anchor="middle")
+text(a, 32, 24.1, "MT query + mate recovery", 5.9, anchor="middle")
+arrow(a, 32, 25.4, 32, 29.1, BLUE)
+text(a, 32, 32.5, "Extracted read pairs", 6.3, True, "middle")
+text(a, 32, 39.2, "Validate: extracted pairs", 5.8, anchor="middle")
 
-text(a, 61.5, 15.2, "Reference-blind", 6.7, True, "middle")
-text(a, 61.5, 20, "Original paired FASTQ", 6.2, anchor="middle")
-pair(a, 52.5, 70.5, 23.7, read=4)
-arrow(a, 61.5, 25.4, 61.5, 29.1, BLUE)
-text(a, 61.5, 32.5, "All original pairs", 6.3, True, "middle")
-text(a, 61.5, 39.2, "Validate: all original pairs", 5.8, anchor="middle")
-
-text(a, 100.5, 15.2, "Seeded", 6.7, True, "middle")
-text(a, 100.5, 20, "Original pairs + mt seed", 6.2, anchor="middle")
-text(a, 100.5, 24.1, "Iterative pair recruitment", 5.9, anchor="middle")
-arrow(a, 100.5, 25.4, 100.5, 29.1, BLUE)
-text(a, 100.5, 32.5, "Recruited read pairs", 6.3, True, "middle")
-text(a, 100.5, 39.2, "Validate: all original pairs", 5.8, anchor="middle")
+text(a, 91, 15.2, "Seeded", 6.7, True, "middle")
+text(a, 91, 20, "Original pairs + mt seed", 6.2, anchor="middle")
+text(a, 91, 24.1, "Iterative pair recruitment", 5.9, anchor="middle")
+arrow(a, 91, 25.4, 91, 29.1, BLUE)
+text(a, 91, 32.5, "Recruited read pairs", 6.3, True, "middle")
+text(a, 91, 39.2, "Validate: all original pairs", 5.8, anchor="middle")
 
 text(a, 152.5, 15.2, "Mapping assembly", 6.7, True, "middle")
 text(a, 152.5, 20, "Matching reference FASTA", 6.2, anchor="middle")
@@ -155,14 +148,14 @@ for x, y in ((137, 28), (146, 30.3), (154, 32.5)):
     pair(a, x, x + 14, y, ORANGE, read=4.1, size=.8)
 text(a, 152.5, 39.2, "CaenDR mt.bam or local BAM", 5.8, anchor="middle")
 
-for x in (22.5, 61.5, 100.5):
+for x in (32, 91):
     line(a, x, 43, x, 45.8, BLUE, .6)
-line(a, 22.5, 45.8, 100.5, 45.8, BLUE, .6)
+line(a, 32, 45.8, 91, 45.8, BLUE, .6)
 text(a, 61.5, 49.7, "Sample FASTQ only; no reference in the assembler", 6.1, anchor="middle")
 arrow(a, 46, 50.8, 46, 53.6, BLUE)
 arrow(a, 152.5, 43, 152.5, 53.6, ORANGE)
 
-# b: the native graph engine shared by the three FASTQ entry modes.
+# b: the native graph engine shared by the two active FASTQ entry modes.
 b = panel("b", 4, 57, "Sample-graph de novo assembly")
 line(b, 5, 60.4, 87, 60.4, BLUE, 1.4)
 text(b, 5, 67, "Build, simplify and compact the sample graph", 6.5, True)
@@ -307,7 +300,7 @@ def export():
     stem = OUT / "figure_1_workflow"
     canvas = Canvas(str(stem.with_suffix(".pdf")), pagesize=(WIDTH * mm, HEIGHT * mm),
                     initialFontName="Arial", initialFontSize=6.3, pageCompression=1)
-    canvas.setTitle("Figure 1 | Native mitochondrial assembly and NCR interpretation")
+    canvas.setTitle("Detailed method schematic | Native mitochondrial assembly and NCR interpretation")
     canvas.setAuthor("mitovarr")
     canvas.setCreator("mitovarr documentation / ReportLab")
     canvas.setSubject("Schematic of the implemented workflow, 2026-09-22")
@@ -327,7 +320,7 @@ def export():
     root.set("height", f"{HEIGHT}mm")
     root.set("viewBox", f"0 0 {WIDTH * mm:.6f} {HEIGHT * mm:.6f}")
     title = ET.Element(f"{{{svg}}}title")
-    title.text = "Figure 1. Native mitochondrial assembly and NCR interpretation with mitovarr"
+    title.text = "Detailed method schematic. Native mitochondrial assembly and NCR interpretation with mitovarr"
     root.insert(0, title)
     desc = ET.Element(f"{{{svg}}}desc")
     desc.text = ("Four schematic panels: input contracts; native de novo assembly; "

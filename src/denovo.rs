@@ -1,8 +1,14 @@
 //! Conservative sample-only de Bruijn graph. No reference or seed input exists here.
 pub(crate) mod align;
+pub(crate) mod anchor;
 mod bubbles;
+mod comparison;
+pub(crate) mod evidence;
+mod layout;
+pub(crate) mod multik;
 pub(crate) mod pairs;
 mod paths;
+pub(crate) mod shortlist;
 mod threading;
 use crate::{
     cli::{GraphSettings, Limits, Reads},
@@ -163,11 +169,23 @@ fn graph(
 }
 
 fn compact(edges: &[Edge], k: usize) -> (Vec<Unitig>, usize) {
+    compact_at(edges, k, &HashSet::new())
+}
+
+fn compact_at(
+    edges: &[Edge],
+    k: usize,
+    boundaries: &HashSet<graph_kmer::Code>,
+) -> (Vec<Unitig>, usize) {
     let mut outgoing: HashMap<graph_kmer::Code, Vec<usize>> = HashMap::new();
     let mut incoming: HashMap<graph_kmer::Code, usize> = HashMap::new();
     for (id, edge) in edges.iter().enumerate() {
         outgoing.entry(edge.from).or_default().push(id);
         *incoming.entry(edge.to).or_default() += 1;
+    }
+    // Split unitigs at requested sample-derived corridor boundaries.
+    for &node in boundaries {
+        incoming.insert(node, 2);
     }
     let branch_nodes = outgoing
         .keys()
@@ -515,14 +533,13 @@ fn validate(
                 ambiguous_reads += 1;
                 continue;
             }
-            let (bases, matching, deletions) =
-                align::trace_bases(read, hit, &aligner.sequence, limits.min_baseq);
+            let trace = align::trace_alignment(read, hit, &aligner.sequence, limits.min_baseq);
             junction |= n - hit.start >= anchor
                 && hit.end >= n + anchor
-                && (n - anchor..n + anchor).all(|p| matching.contains(&p));
-            observed.extend(bases.into_iter().map(|p| p % n));
-            covered.extend(matching.into_iter().map(|p| p % n));
-            deleted.extend(deletions.into_iter().map(|p| p % n));
+                && trace.matches_contiguous(n - anchor, n + anchor);
+            observed.extend(trace.observed.into_iter().map(|p| p % n));
+            covered.extend(trace.matching.into_iter().map(|p| p % n));
+            deleted.extend(trace.deletions.into_iter().map(|p| p % n));
             matches += 1;
             exact_reads += u64::from(hit.edits == 0);
             aligned_reads += 1;
@@ -741,13 +758,26 @@ pub fn assemble(
             json!(selected_bubbles),
         );
     }
-    let primary = paths::primary::write_primary(
+    let (primary, best_circular) = paths::primary::write_outputs(
         path_resolution.primary_candidates,
         &counts,
         settings.k,
         out,
         selected.filter(|_| complete),
     )?;
+    let coverage_layout = if settings.coverage_layout && !primary.is_null() {
+        let backbone = crate::io::fasta::load_reference(&out.join("primary.fasta"), None)?;
+        layout::propose(
+            &backbone.sequence,
+            primary["circular"].as_bool().unwrap_or(false),
+            reads,
+            out,
+            settings,
+            limits,
+        )?
+    } else {
+        json!({"enabled":settings.coverage_layout,"status":if settings.coverage_layout {"no_primary_backbone"} else {"disabled"}})
+    };
     let reason = if complete {
         "supported_dominant_circle"
     } else if !selected_bubbles.is_empty() {
@@ -796,11 +826,16 @@ pub fn assemble(
         "read_threading":read_threading,
         "paired_path_resolution":path_resolution.report,
         "primary":primary,
+        "best_circular":best_circular,
+        "sequence_output":{"status":if complete {"complete"} else if !primary.is_null() {"partial_available"} else {"unavailable"},
+            "fasta":if !primary.is_null() {Some("primary.fasta")} else {None},
+            "gene_quality":"not_assessed", "ncr1_required_for_partial_output":false},
+        "coverage_layout":coverage_layout,
         "candidate_count":candidates.len(),"candidates":candidates.iter().enumerate().map(|(i,c)|json!({"id":format!("candidate_{}",i+1),"length":c.sequence.len(),"circular":c.circular})).collect::<Vec<_>>(),
         "selected_candidate":selected_id.map(|id|format!("candidate_{}",id+1)),"selection_rule":"one circular candidate at least k bases, no unresolved collapsed alternatives in its raw graph component, with gapped read-supported coverage and closure; graph k-mer mass is diagnostic, other small components retained without global veto", "selected_component_support_fraction":component_fraction,
         "candidate_count_before_paired_paths":threaded.candidates.len(),
         "recruitment":recruitment,"validation":validation,"origin":"lexicographically minimal cyclic rotation across both strands",
-        "limitations":["local error cleanup can remove low-frequency biological alleles; this is a primary-consensus assembler, not a heteroplasmy caller","no repeat-copy-number guessing, scaffolding, annotation or reference repair","complete means this graph and gapped-read support criteria passed; mitochondrial identity requires independent annotation"],
+        "limitations":["local error cleanup can remove low-frequency biological alleles; this is a primary-consensus assembler, not a heteroplasmy caller","optional coverage layouts estimate repeat copies and remain separate from final assembly; no annotation or reference repair","complete means this graph and gapped-read support criteria passed; mitochondrial identity requires independent annotation"],
     });
     crate::write_json(&out.join("report.json"), &report)?;
     if complete {

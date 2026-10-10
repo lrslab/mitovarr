@@ -1,8 +1,19 @@
 # tRNA、CDS 注释与完整度判读
 
+NCR1 完整性不再是保留和评估其余序列的前提。`annotate` 新增
+`gene_quality.tsv` 和 `records[].gene_quality`，按每个预期基因汇总缺失、
+不完整、多个同源位置、CDS 异常及与已提供组装歧义的重叠。
+`annotation_clear` 仅表示这些检查未发现问题；注释没有重新验证 reads，
+未提供组装歧义文件也不代表没有歧义。NCR1 之外的问题仍需逐项处理，
+完整基因组与闭环标记保持原有证据要求。详见 [partial 工作流](partial_results.md)。
+
 本文说明当前 `mitovarr annotate` 的实际实现。**“检出同源基因”“边界完整”“通过当前完整度规则”分别表达不同信息；个别碱基不同不等于基因缺失。** RNA 末端错配仍可能被局部比对裁去，影响完整度分类。
 
 命令示例、全部输出文件和坐标转换见 [annotation.md](annotation.md)，NCR1–4 的位置定义见 [ncr.md](ncr.md)。
+
+组装输出最佳环候选时，可将 `best_circular.fasta` 与匹配的
+`best_circular_ambiguity.tsv` 一起交给注释。该序列的环状标记和
+`final_verified` 状态会被分别保留；候选已选出不代表重复结构已验证。
 
 ## 输入与同源模型
 

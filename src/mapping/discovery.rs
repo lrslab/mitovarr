@@ -106,8 +106,8 @@ impl Signals {
         }
         for a in ambiguity {
             mark(
-                called.reference_offsets[a.start - 1],
-                called.reference_offsets[a.end],
+                called.reference_offsets[a.start],
+                called.reference_offsets[a.end + 1],
             );
             reasons.insert("repeat_ambiguity");
         }
@@ -171,7 +171,12 @@ pub(super) fn rotate_windows(mask: &[bool]) -> (usize, Vec<(usize, usize)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::consensus::CoverageRecord;
+    use crate::{
+        consensus::{
+            finalize_consensus, ChosenIndel, ConsensusDraft, CoverageRecord, IndelCallKind,
+        },
+        pileup::IndelStats,
+    };
 
     fn backbone() -> ConsensusResult {
         ConsensusResult {
@@ -189,6 +194,78 @@ mod tests {
                     is_repeat_ambiguous: false,
                 })
                 .collect(),
+        }
+    }
+
+    fn repeat_interval(start: usize, end: usize) -> AmbiguityInterval {
+        AmbiguityInterval {
+            start,
+            end,
+            len: end - start + 1,
+            triggers: "low_mapq|depth_anomaly".into(),
+            median_mapq: 0.0,
+            sec_supp_frac: 0.0,
+            depth_ratio: 0.0,
+            mean_entropy: 0.0,
+            action: "strict_filtering".into(),
+        }
+    }
+
+    #[test]
+    fn repeat_ambiguity_windows_include_origin_and_terminal_base() {
+        let called = backbone();
+        // Expected ranges include the existing 60-base circular padding.
+        for (start, end, ranges) in [
+            (0, 0, vec![(0, 61), (1940, 2000)]),
+            (0, 99, vec![(0, 160), (1940, 2000)]),
+            (200, 299, vec![(140, 360)]),
+            (1999, 1999, vec![(0, 60), (1939, 2000)]),
+            (0, 1999, vec![(0, 2000)]),
+        ] {
+            let (actual, reasons) =
+                Signals::default().windows(&called, &[repeat_interval(start, end)]);
+            let mut expected = vec![false; called.sequence.len()];
+            for (start, end) in ranges {
+                expected[start..end].fill(true);
+            }
+            assert_eq!(actual.len(), expected.len());
+            for (pos, (&observed, &wanted)) in actual.iter().zip(&expected).enumerate() {
+                assert_eq!(observed, wanted, "reference {start}..={end}, output {pos}");
+            }
+            assert_eq!(reasons, ["repeat_ambiguity"]);
+        }
+    }
+
+    #[test]
+    fn repeat_ambiguity_windows_follow_pileup_indels() {
+        let called = backbone();
+        let mut indels = vec![None; called.sequence.len()];
+        for (pos, kind) in [
+            (99, IndelCallKind::Insertion("GGGGG".into())),
+            (249, IndelCallKind::Deletion(10)),
+        ] {
+            indels[pos] = Some(ChosenIndel {
+                kind,
+                stats: IndelStats::default(),
+                frac: 1.0,
+            });
+        }
+        let called = finalize_consensus(ConsensusDraft {
+            base_calls: called.sequence,
+            indels,
+            variants: vec![],
+            coverage: called.coverage,
+            uncertainty: vec![],
+            base_votes: vec![],
+        });
+        let (actual, _) = Signals::default().windows(&called, &[repeat_interval(200, 299)]);
+        let mut expected = vec![false; 1995];
+        // The insertion shifts the interval's start to 205; the deletion
+        // brings its exclusive end to 295. Padding gives [145, 355).
+        expected[145..355].fill(true);
+        assert_eq!(actual.len(), expected.len());
+        for (pos, (&observed, &wanted)) in actual.iter().zip(&expected).enumerate() {
+            assert_eq!(observed, wanted, "output {pos}");
         }
     }
 

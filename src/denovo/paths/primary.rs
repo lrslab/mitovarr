@@ -48,7 +48,7 @@ pub(super) fn project_interval(
     }
 }
 
-fn normalize_regions(
+pub(in crate::denovo) fn normalize_regions(
     sequence: Vec<u8>,
     circular: bool,
     regions: Vec<Region>,
@@ -340,18 +340,18 @@ fn support_mass(candidate: &Candidate, counts: &HashMap<graph_kmer::Code, u32>, 
         .sum()
 }
 
-pub(in crate::denovo) fn write_primary(
-    mut candidates: Vec<Primary>,
+pub(in crate::denovo) fn write_outputs(
+    candidates: Vec<Primary>,
     counts: &HashMap<graph_kmer::Code, u32>,
     k: usize,
     out: &Path,
     final_candidate: Option<&Candidate>,
-) -> Result<Value> {
+) -> Result<(Value, Value)> {
     // Whole-cycle likelihood has already chosen ONE representative per family.
     // Mass chooses the main component, never the repeat count within a family.
     // Collapse duplicate spellings, preferring the more detailed cycle record.
     let mut unique = BTreeMap::new();
-    for p in candidates.drain(..) {
+    for p in candidates {
         unique.insert((p.candidate.sequence.clone(), p.candidate.circular), p);
     }
     if let Some(c) = final_candidate {
@@ -363,49 +363,70 @@ pub(in crate::denovo) fn write_primary(
                 regions: Vec::new(),
             });
     }
-    let selected = unique
+    let ranked: Vec<_> = unique
         .into_values()
         .filter(|p| p.candidate.sequence.len() >= k)
-        .max_by_key(|p| {
-            (
-                final_candidate.is_some_and(|c| {
-                    c.sequence == p.candidate.sequence && c.circular == p.candidate.circular
-                }),
-                support_mass(&p.candidate, counts, k),
-                p.candidate.circular,
-                std::cmp::Reverse(p.candidate.sequence.clone()),
-            )
-        });
-    let mut ambiguity = BufWriter::new(File::create(out.join("primary_ambiguity.tsv"))?);
+        .map(|mut p| {
+            p.regions
+                .sort_by_key(|r| (r.start, r.end, r.evidence.clone()));
+            let mass = support_mass(&p.candidate, counts, k);
+            let verified = final_candidate.is_some_and(|c| {
+                c.sequence == p.candidate.sequence && c.circular == p.candidate.circular
+            });
+            (p, mass, verified)
+        })
+        .collect();
+    let rank = |(p, mass, verified): &(Primary, u64, bool)| {
+        (
+            *verified,
+            *mass,
+            p.candidate.circular,
+            std::cmp::Reverse(p.candidate.sequence.clone()),
+        )
+    };
+    let selected = ranked.iter().max_by_key(|p| rank(p));
+    let primary = if let Some((p, mass, verified)) = selected {
+        write_selected(p, *mass, *verified, out, "primary")?
+    } else {
+        write_ambiguity(out, "primary", &[])?;
+        Value::Null
+    };
+    // Select independently: a dominant linear primary must not hide a usable
+    // circular candidate, and a small residual circle must not replace it.
+    let circles: Vec<_> = ranked
+        .iter()
+        .filter(|(p, _, _)| p.candidate.circular)
+        .collect();
+    let selection = "whole-cycle fragment score within a family; distinct sample k-mer support mass between eligible circular components; validated final candidate takes precedence; exact support ties use normalized sequence lexicographic order";
+    let best_circular =
+        if let Some((p, mass, verified)) = circles.iter().copied().max_by_key(|p| rank(p)) {
+            let mut report = write_selected(p, *mass, *verified, out, "best_circular")?;
+            report["status"] = json!("selected");
+            report["selection"] = json!(selection);
+            report["eligible_representative_count"] = json!(circles.len());
+            report
+        } else {
+            json!({
+                "status":"unavailable","reason":"no_eligible_circular_candidate",
+                "file":null,"ambiguity_file":null,"length":null,"circular":null,
+                "final_verified":false,"source":null,"selection":selection,
+                "eligible_representative_count":0,"canonical_kmer_support_mass":null,
+                "uncertainty_intervals":[],"structural_uniqueness_claim":false,
+            })
+        };
+    Ok((primary, best_circular))
+}
+
+fn write_ambiguity(out: &Path, id: &str, regions: &[Region]) -> Result<()> {
+    let mut ambiguity = BufWriter::new(File::create(out.join(format!("{id}_ambiguity.tsv")))?);
     writeln!(
         ambiguity,
         "sequence\tstart\tend\tevidence\treason\talternatives"
     )?;
-    let Some(mut primary) = selected else {
-        ambiguity.flush()?;
-        return Ok(Value::Null);
-    };
-    primary
-        .regions
-        .sort_by_key(|r| (r.start, r.end, r.evidence.clone()));
-    let c = &primary.candidate;
-    let verified =
-        final_candidate.is_some_and(|f| f.sequence == c.sequence && f.circular == c.circular);
-    crate::io::fasta::write_fasta_records(
-        &out.join("primary.fasta"),
-        &[(
-            format!(
-                "primary circular={} length={} final_verified={verified}",
-                c.circular,
-                c.sequence.len()
-            ),
-            c.sequence.clone(),
-        )],
-    )?;
-    for r in &primary.regions {
+    for r in regions {
         writeln!(
             ambiguity,
-            "primary\t{}\t{}\t{}\t{}\t{}",
+            "{id}\t{}\t{}\t{}\t{}\t{}",
             r.start + 1,
             r.end,
             r.evidence,
@@ -414,13 +435,37 @@ pub(in crate::denovo) fn write_primary(
         )?;
     }
     ambiguity.flush()?;
+    Ok(())
+}
+
+fn write_selected(
+    primary: &Primary,
+    mass: u64,
+    verified: bool,
+    out: &Path,
+    id: &str,
+) -> Result<Value> {
+    let c = &primary.candidate;
+    let file = format!("{id}.fasta");
+    crate::io::fasta::write_fasta_records(
+        &out.join(&file),
+        &[(
+            format!(
+                "{id} circular={} length={} final_verified={verified}",
+                c.circular,
+                c.sequence.len()
+            ),
+            c.sequence.clone(),
+        )],
+    )?;
+    write_ambiguity(out, id, &primary.regions)?;
     Ok(json!({
-        "file":"primary.fasta","ambiguity_file":"primary_ambiguity.tsv","length":c.sequence.len(),
+        "file":file,"ambiguity_file":format!("{id}_ambiguity.tsv"),"length":c.sequence.len(),
         "circular":c.circular,"final_verified":verified,"source":primary.source,
         "selection":"whole-cycle fragment score within a family; distinct sample k-mer support mass between components; validated final candidate takes precedence",
-        "canonical_kmer_support_mass":support_mass(c, counts, k),
+        "canonical_kmer_support_mass":mass,
         "uncertainty_intervals":primary.regions.iter().map(|r|json!({"start":r.start+1,"end":r.end,"evidence":r.evidence,"reason":r.reason,"alternatives":r.alternatives})).collect::<Vec<_>>(),
-        "interval_coordinates":"one-based inclusive in primary.fasta, before annotation or tRNA-Pro rotation; empty alleles mark one adjacent base",
+        "interval_coordinates":format!("one-based inclusive in {file}, before annotation or tRNA-Pro rotation; empty alleles mark one adjacent base"),
         "structural_uniqueness_claim":false,
     }))
 }
@@ -428,6 +473,76 @@ pub(in crate::denovo) fn write_primary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn output_dir(name: &str) -> std::path::PathBuf {
+        let out =
+            std::env::temp_dir().join(format!("mitovar-primary-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&out).unwrap();
+        out
+    }
+
+    fn representative(sequence: &[u8], circular: bool, source: Value) -> Primary {
+        Primary {
+            candidate: Candidate {
+                sequence: normalize(sequence, circular),
+                circular,
+            },
+            source,
+            regions: Vec::new(),
+        }
+    }
+
+    fn add_counts(
+        counts: &mut HashMap<graph_kmer::Code, u32>,
+        candidate: &Candidate,
+        count: u32,
+        k: usize,
+    ) {
+        let mut sequence = candidate.sequence.clone();
+        if candidate.circular {
+            sequence.extend(candidate.sequence.iter().copied().cycle().take(k - 1));
+        }
+        graph_kmer::visit(&sequence, None, k, 0, |_, code| {
+            counts.insert(graph_kmer::canonical(code, k), count);
+        });
+    }
+
+    #[test]
+    fn scheduling_length_is_not_selection_and_incomplete_search_cannot_join() {
+        use super::super::super::threading::Segment;
+        let graph = PathGraph {
+            segments: [b"GGGA".as_slice(), b"AAA", b"ACCCA", b"ATG"]
+                .into_iter()
+                .map(|s| Segment {
+                    sequence: s.to_vec(),
+                    circular: false,
+                })
+                .collect(),
+            outgoing: vec![vec![1, 2], vec![3], vec![3], vec![]],
+        };
+        let mut locus = enumerate(&graph, 0, &HashSet::from([0, 3]), 1, 100, 20, 20);
+        assert!(locus.routes[0].sequence.len() < locus.routes[1].sequence.len());
+        locus.totals = vec![-100.0, 0.0];
+        locus.spanning[1] = 20;
+        locus.strong_votes[1][0] = 20;
+        let settings = GraphSettings {
+            coverage_layout: false,
+            multi_k_layout: false,
+            k: 15,
+            min_kmer_count: 3,
+            max_error_fraction: 0.2,
+            max_bubble_fraction: 0.49,
+            min_depth: 10,
+            min_junction_fragments: 3,
+            max_validation_pairs: 10000,
+        };
+        assert_eq!(choose(&locus, &settings), Some(1));
+        locus.exhausted = true;
+        assert_eq!(choose(&locus, &settings), None);
+        locus.exhausted = false;
+        locus.length_limited = true;
+        assert_eq!(choose(&locus, &settings), None);
+    }
 
     #[test]
     fn uncertain_intervals_follow_rotation_reverse_complement_and_empty_alleles() {
@@ -487,6 +602,148 @@ mod tests {
     }
 
     #[test]
+    fn best_circle_is_selected_independently_of_a_heavier_linear_primary() {
+        let out = output_dir("independent-circle");
+        let k = 15;
+        let linear = representative(
+            b"GGCAGGACTCGGATCAGTTGGCCAGTAAGTCCAGCATAGCCAGT",
+            false,
+            json!({"type":"joined_graph_paths"}),
+        );
+        let mut best = representative(
+            b"ACGTTAGGCATCTGAACCTGTAGTCCGATCAATGCG",
+            true,
+            json!({"type":"complete_cycle_family","family":1,"score":-10.0,
+                "runner_up_score_margin":0.000005,"strict_selected":false}),
+        );
+        best.regions = vec![
+            Region {
+                start: 20,
+                end: 23,
+                evidence: "circle_family_1_block_2".into(),
+                reason: "competing_cycle_paths",
+                alternatives: 2,
+            },
+            Region {
+                start: 4,
+                end: 9,
+                evidence: "circle_family_1_block_1".into(),
+                reason: "competing_cycle_paths",
+                alternatives: 1,
+            },
+        ];
+        let weaker = representative(
+            b"TCCGCTACTAACGTCCAGGTCTATGACCGTCATGCATA",
+            true,
+            json!({"type":"complete_cycle_family","family":2,"score":0.0}),
+        );
+        let expected_linear = linear.candidate.sequence.clone();
+        let expected_circle = best.candidate.sequence.clone();
+        let mut counts = HashMap::new();
+        add_counts(&mut counts, &weaker.candidate, 2, k);
+        add_counts(&mut counts, &best.candidate, 8, k);
+        add_counts(&mut counts, &linear.candidate, 100, k);
+        assert!(
+            support_mass(&linear.candidate, &counts, k) > support_mass(&best.candidate, &counts, k)
+        );
+        assert!(
+            support_mass(&best.candidate, &counts, k) > support_mass(&weaker.candidate, &counts, k)
+        );
+        let (primary, circle) =
+            write_outputs(vec![linear, weaker, best], &counts, k, &out, None).unwrap();
+        assert_eq!(primary["circular"], false);
+        assert_eq!(circle["status"], "selected");
+        assert_eq!(circle["eligible_representative_count"], 2);
+        assert_eq!(circle["source"]["family"], 1);
+        assert_eq!(circle["source"]["runner_up_score_margin"], 0.000005);
+        assert_eq!(circle["final_verified"], false);
+        assert_eq!(circle["structural_uniqueness_claim"], false);
+        assert_eq!(circle["uncertainty_intervals"][0]["start"], 5);
+        assert_eq!(circle["uncertainty_intervals"][0]["end"], 9);
+        assert_eq!(circle["uncertainty_intervals"][1]["start"], 21);
+        assert_eq!(
+            crate::io::fasta::load_reference(&out.join("primary.fasta"), None)
+                .unwrap()
+                .sequence,
+            expected_linear
+        );
+        let fasta =
+            crate::io::fasta::load_reference(&out.join("best_circular.fasta"), None).unwrap();
+        assert_eq!(fasta.sequence, expected_circle);
+        let header = std::fs::read_to_string(out.join("best_circular.fasta")).unwrap();
+        assert!(header.starts_with(&format!(
+            ">best_circular circular=true length={} final_verified=false\n",
+            expected_circle.len()
+        )));
+        let ambiguity = std::fs::read_to_string(out.join("best_circular_ambiguity.tsv")).unwrap();
+        assert!(ambiguity
+            .contains("best_circular\t5\t9\tcircle_family_1_block_1\tcompeting_cycle_paths\t1\n"));
+        assert!(ambiguity.contains(
+            "best_circular\t21\t23\tcircle_family_1_block_2\tcompeting_cycle_paths\t2\n"
+        ));
+        assert!(!out.join("consensus.fasta").exists());
+        std::fs::remove_dir_all(out).unwrap();
+    }
+
+    #[test]
+    fn exact_circle_support_ties_use_normalized_sequence_independent_of_input_order() {
+        let sequences = [
+            b"ACGTTAGGCATCTGAACCTGTAGTCCGATCAATGCG".as_slice(),
+            b"TCCGCTACTAACGTCCAGGTCTATGACCGTCATGCATA".as_slice(),
+        ];
+        let expected = sequences.iter().map(|s| normalize(s, true)).min().unwrap();
+        let first = output_dir("tie-forward");
+        let second = output_dir("tie-reversed");
+        for (out, reversed) in [(&first, false), (&second, true)] {
+            let mut candidates: Vec<_> = sequences
+                .iter()
+                .map(|s| representative(s, true, json!({"type":"graph_segment"})))
+                .collect();
+            if reversed {
+                candidates.reverse();
+            }
+            let (_, circle) = write_outputs(candidates, &HashMap::new(), 15, out, None).unwrap();
+            assert_eq!(circle["canonical_kmer_support_mass"], 0);
+            assert_eq!(
+                crate::io::fasta::load_reference(&out.join("best_circular.fasta"), None)
+                    .unwrap()
+                    .sequence,
+                expected
+            );
+        }
+        assert_eq!(
+            std::fs::read(first.join("best_circular.fasta")).unwrap(),
+            std::fs::read(second.join("best_circular.fasta")).unwrap()
+        );
+        std::fs::remove_dir_all(first).unwrap();
+        std::fs::remove_dir_all(second).unwrap();
+    }
+
+    #[test]
+    fn no_eligible_circle_keeps_linear_primary_without_circular_files() {
+        let out = output_dir("no-circle");
+        let linear = representative(
+            b"ACGTTAGGCATCTGAACCTGTAGTCCGATCAATGCG",
+            false,
+            json!({"type":"graph_segment"}),
+        );
+        let short = representative(b"ACGT", true, json!({"type":"graph_segment"}));
+        let (primary, circle) =
+            write_outputs(vec![linear, short], &HashMap::new(), 15, &out, None).unwrap();
+        assert_eq!(primary["circular"], false);
+        assert_eq!(circle["status"], "unavailable");
+        assert_eq!(circle["reason"], "no_eligible_circular_candidate");
+        assert_eq!(circle["eligible_representative_count"], 0);
+        assert!(circle["file"].is_null());
+        assert!(circle["ambiguity_file"].is_null());
+        assert!(circle["source"].is_null());
+        assert!(!out.join("best_circular.fasta").exists());
+        assert!(!out.join("best_circular_ambiguity.tsv").exists());
+        assert!(out.join("primary.fasta").exists());
+        std::fs::remove_dir_all(out).unwrap();
+    }
+
+    #[test]
     fn validated_circle_remains_primary_when_relaxed_connections_change_candidates() {
         let out =
             std::env::temp_dir().join(format!("mitovar-primary-final-{}", std::process::id()));
@@ -495,7 +752,7 @@ mod tests {
             sequence: b"ACGTTAGGCATCTGAACCTGTAGTCCGATCAATGCG".to_vec(),
             circular: true,
         };
-        let alternatives = vec![Primary {
+        let mut alternatives = vec![Primary {
             candidate: Candidate {
                 sequence: [
                     final_candidate.sequence.clone(),
@@ -507,16 +764,31 @@ mod tests {
             source: json!({"type":"joined_graph_paths"}),
             regions: Vec::new(),
         }];
-        let report = write_primary(
-            alternatives,
-            &HashMap::new(),
-            15,
-            &out,
-            Some(&final_candidate),
-        )
-        .unwrap();
+        let heavy_circle = representative(
+            b"TCCGCTACTAACGTCCAGGTCTATGACCGTCATGCATA",
+            true,
+            json!({"type":"graph_segment"}),
+        );
+        let mut counts = HashMap::new();
+        add_counts(&mut counts, &heavy_circle.candidate, 100, 15);
+        assert!(
+            support_mass(&heavy_circle.candidate, &counts, 15)
+                > support_mass(&final_candidate, &counts, 15)
+        );
+        alternatives.push(heavy_circle);
+        let (report, circle) =
+            write_outputs(alternatives, &counts, 15, &out, Some(&final_candidate)).unwrap();
         assert_eq!(report["final_verified"], true);
         assert_eq!(report["circular"], true);
+        assert_eq!(circle["status"], "selected");
+        assert_eq!(circle["final_verified"], true);
+        assert_eq!(circle["source"]["type"], "validated_candidate");
+        assert_eq!(
+            crate::io::fasta::load_reference(&out.join("best_circular.fasta"), None)
+                .unwrap()
+                .sequence,
+            final_candidate.sequence
+        );
         assert_eq!(
             crate::io::fasta::load_reference(&out.join("primary.fasta"), None)
                 .unwrap()

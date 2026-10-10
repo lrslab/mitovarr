@@ -14,7 +14,8 @@ use crate::{
 use anyhow::{ensure, Result};
 use serde_json::{json, Value};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet},
     path::Path,
 };
 
@@ -28,6 +29,31 @@ mod terminal_tests;
 const MAX_PATHS: usize = 128;
 const MAX_STATES: usize = 50_000;
 const FLANK: usize = 20;
+
+// Accumulated intermediate bases, complete node history, then next node.
+// Keeping the history is essential: equal-cost arrivals at one node can spell
+// different alleles or repeat copy counts. Ordering only schedules discovery;
+// it supplies no length preference to the fragment scorer.
+type PendingWalk = Reverse<(usize, Vec<usize>, usize)>;
+
+#[derive(Default)]
+struct Frontier {
+    pending: BinaryHeap<PendingWalk>,
+    peak: usize,
+    limited: bool,
+}
+
+impl Frontier {
+    fn push(&mut self, bases: usize, path: Vec<usize>, node: usize) -> bool {
+        if self.pending.len() >= MAX_STATES {
+            self.limited = true;
+            return false;
+        }
+        self.pending.push(Reverse((bases, path, node)));
+        self.peak = self.peak.max(self.pending.len());
+        true
+    }
+}
 
 struct Route {
     circle_length: Option<usize>,
@@ -86,6 +112,11 @@ struct Locus {
     indexes: Vec<Index>,
     states: usize,
     exhausted: bool,
+    state_limited: bool,
+    path_limited: bool,
+    cycle_expansion_limited: bool,
+    frontier_peak: usize,
+    frontier_limited: bool,
     length_limited: bool,
     repeat_cycles: Vec<repeats::Cycle>,
     dead_ends: usize,
@@ -118,6 +149,9 @@ fn enumerate(
     let mut routes = Vec::new();
     let mut states = 0;
     let mut exhausted = false;
+    let mut state_limited = false;
+    let mut path_limited = false;
+    let mut cycle_expansion_limited = false;
     let mut length_limited = false;
     let mut dead_ends = 0;
     let cycles = repeats::cycles(graph, anchors, overlap);
@@ -127,16 +161,19 @@ fn enumerate(
         .flat_map(|(i, c)| c.nodes.iter().map(move |&node| (node, i)))
         .collect();
     let mut used_cycles = BTreeSet::new();
-    let mut stack: Vec<_> = graph.outgoing[from]
-        .iter()
-        .rev()
-        .map(|&to| (to, Vec::<usize>::new(), 0usize))
-        .collect();
+    let mut frontier = Frontier::default();
+    for &to in &graph.outgoing[from] {
+        if !frontier.push(0, Vec::new(), to) {
+            exhausted = true;
+            break;
+        }
+    }
     let mut unique = BTreeSet::new();
-    while let Some((node, path, bases)) = stack.pop() {
+    'search: while let Some(Reverse((bases, path, node))) = frontier.pending.pop() {
         states += 1;
         if states > MAX_STATES {
             exhausted = true;
+            state_limited = true;
             break;
         }
         if anchors.contains(&node) {
@@ -157,8 +194,9 @@ fn enumerate(
                     right_start,
                     snp_interval: None,
                 });
-                if routes.len() >= MAX_PATHS && !stack.is_empty() {
+                if routes.len() >= MAX_PATHS && !frontier.pending.is_empty() {
                     exhausted = true;
+                    path_limited = true;
                     break;
                 }
             }
@@ -193,12 +231,18 @@ fn enumerate(
                         expanded.push((next, nodes, bases + added));
                         if expanded.len() >= MAX_PATHS {
                             exhausted = true;
+                            cycle_expansion_limited = true;
                             break 'turns;
                         }
                     }
                 }
             }
-            stack.extend(expanded.into_iter().rev());
+            for (next, nodes, bases) in expanded {
+                if !frontier.push(bases, nodes, next) {
+                    exhausted = true;
+                    break 'search;
+                }
+            }
             continue;
         }
         let added = graph.segments[node].sequence.len().saturating_sub(overlap);
@@ -211,8 +255,11 @@ fn enumerate(
         if graph.outgoing[node].is_empty() {
             dead_ends += 1;
         }
-        for &next in graph.outgoing[node].iter().rev() {
-            stack.push((next, path.clone(), bases + added));
+        for &next in &graph.outgoing[node] {
+            if !frontier.push(bases + added, path.clone(), next) {
+                exhausted = true;
+                break 'search;
+            }
         }
     }
     identify_single_snp(from, &mut routes);
@@ -227,6 +274,11 @@ fn enumerate(
         indexes,
         states,
         exhausted,
+        state_limited,
+        path_limited,
+        cycle_expansion_limited,
+        frontier_peak: frontier.peak,
+        frontier_limited: frontier.limited,
         length_limited,
         repeat_cycles: used_cycles.into_iter().map(|i| cycles[i].clone()).collect(),
         dead_ends,
@@ -823,7 +875,7 @@ pub(super) fn resolve(
             ));
         }
     }
-    let reports: Vec<_> = loci.iter().enumerate().map(|(li,l)|json!({"source_segment":l.from+1,"candidate_independent_log_offset":l.offset,"score_definition":"sum of per-fragment log scores minus that fragment maximum over all paths","source_length":graph.segments[l.from].sequence.len(),"search_states":l.states,"search_exhausted":l.exhausted,"length_limited":l.length_limited,"repeat_copy_model":repeat_depth.report(l,graph,&occurrence),"dead_end_walks":l.dead_ends,"fragments":l.fragments,"unplaced_pairs":l.unplaced,"r1_only_fragments":l.r1_only,"r2_only_fragments":l.r2_only,"r2_anchored_fragments":l.r2_anchored,"alignment_limited_pairs":l.alignment_limited,"unscored_maximum_total_contrast":unscored_contrast_bound(l.alignment_limited),"selected_path":l.selected.map(|i|i+1),"primary_path":primary_choices[li].map(|i|i+1),"paths":l.routes.iter().enumerate().map(|(i,r)|json!({"path":i+1,"target_segment":r.to+1,"target_length":graph.segments[r.to].sequence.len(),"intermediate_segments":r.nodes.iter().map(|id|id+1).collect::<Vec<_>>(),"connecting_bases":r.right_start-r.left_end,"spanning_interval":{"start_0based":r.spanning_interval().0,"end_0based_exclusive":r.spanning_interval().1,"basis":if r.snp_interval.is_some(){"single_snp_shared_flanks"}else{"graph_corridor"}},"score":l.totals[i],"spanning_fragments":l.spanning[i],"strong_votes_against_alternatives":l.strong_votes[i]})).collect::<Vec<_>>()})).collect();
+    let reports: Vec<_> = loci.iter().enumerate().map(|(li,l)|json!({"source_segment":l.from+1,"candidate_independent_log_offset":l.offset,"score_definition":"sum of per-fragment log scores minus that fragment maximum over all paths","source_length":graph.segments[l.from].sequence.len(),"search_states":l.states,"search_exhausted":l.exhausted,"search_cuts":{"visited_states":l.state_limited,"candidate_paths":l.path_limited,"cycle_pre_expansion":l.cycle_expansion_limited,"pending_states":l.frontier_limited,"intermediate_length":l.length_limited},"peak_pending_states":l.frontier_peak,"frontier_limited":l.frontier_limited,"length_limited":l.length_limited,"repeat_copy_model":repeat_depth.report(l,graph,&occurrence),"dead_end_walks":l.dead_ends,"fragments":l.fragments,"unplaced_pairs":l.unplaced,"r1_only_fragments":l.r1_only,"r2_only_fragments":l.r2_only,"r2_anchored_fragments":l.r2_anchored,"alignment_limited_pairs":l.alignment_limited,"unscored_maximum_total_contrast":unscored_contrast_bound(l.alignment_limited),"selected_path":l.selected.map(|i|i+1),"primary_path":primary_choices[li].map(|i|i+1),"paths":l.routes.iter().enumerate().map(|(i,r)|json!({"path":i+1,"target_segment":r.to+1,"target_length":graph.segments[r.to].sequence.len(),"intermediate_segments":r.nodes.iter().map(|id|id+1).collect::<Vec<_>>(),"connecting_bases":r.right_start-r.left_end,"spanning_interval":{"start_0based":r.spanning_interval().0,"end_0based_exclusive":r.spanning_interval().1,"basis":if r.snp_interval.is_some(){"single_snp_shared_flanks"}else{"graph_corridor"}},"score":l.totals[i],"spanning_fragments":l.spanning[i],"strong_votes_against_alternatives":l.strong_votes[i]})).collect::<Vec<_>>()})).collect();
     Ok(Resolution {
         supported_cycles,
         primary_candidates,
@@ -831,7 +883,7 @@ pub(super) fn resolve(
             .into_iter()
             .map(|(sequence, circular)| Candidate { sequence, circular })
             .collect(),
-        report: json!({"method":"complete graph paths between sample-only anchors; full-query affine-gap alignment and one empirical paired-fragment score per name","fragment_model":training.report,"end_assembly":end_assembly,"complete_cycle_comparison":complete_cycles.report,"primary_selection":{"local_rule":"highest fragment score with spanning support and observed strong-vote majority; reciprocal graph views agree or retain a strict choice","minimum_spanning_fragments":settings.min_junction_fragments,"limited_alignments":"omitted from every candidate; reported as unknown, not counted as observed opposition for primary output","incomplete_path_search":"no relaxed join","cycle_rule":"one highest-scoring enumerated complete cycle with supported corridor boundaries; unresolved alleles and phase retained locally; strict final criteria unchanged"},"score_is_correctness_probability":false,"alignment":{"mode":"full-query affine-gap fitting; free target flanks, no query clipping","seed_length":17,"seed_start_margin":12,"maximum_seed_starts_per_strand":256,"gap_open_log_score":-8.0,"gap_extend_log_score":-2.0,"quality_error_floor":0.001,"outlier_log_floor":-12.0},"fragment_pool":"identical names for all paths, recruited by unique source-anchor 31-mers on either mate; prefer R1 when both qualify, fixed anchor before alignment, no conditioning on the other mate placement; empirical weights are not renormalized over found hits","maximum_paths_per_anchor":MAX_PATHS,"maximum_search_states_per_anchor":MAX_STATES,"maximum_intermediate_bases":max_bases,"context_bases":context,"selection":{"minimum_score_margin":10.0,"minimum_margin_over_root_sum_squared_deltas":3.0,"strong_fragment_log_margin":2.3,"minimum_spanning_fragments":settings.min_junction_fragments,"max_strong_minor_major_ratio":settings.max_error_fraction},"scan":scan,"distinct_scored_fragment_names":names.len(),"anchor_count":anchors.len(),"short_terminal_anchor_count":short_terminal_anchors,"selected_connections":connections.len(),"loci":reports}),
+        report: json!({"method":"complete graph paths between sample-only anchors; full-query affine-gap alignment and one empirical paired-fragment score per name","fragment_model":training.report,"end_assembly":end_assembly,"complete_cycle_comparison":complete_cycles.report,"primary_selection":{"local_rule":"highest fragment score with spanning support and observed strong-vote majority; reciprocal graph views agree or retain a strict choice","minimum_spanning_fragments":settings.min_junction_fragments,"limited_alignments":"omitted from every candidate; reported as unknown, not counted as observed opposition for primary output","incomplete_path_search":"no relaxed join","cycle_rule":"one highest-scoring enumerated complete cycle with supported corridor boundaries; unresolved alleles and phase retained locally; strict final criteria unchanged"},"score_is_correctness_probability":false,"alignment":{"mode":"full-query affine-gap fitting; free target flanks, no query clipping","seed_length":17,"seed_start_margin":12,"maximum_seed_starts_per_strand":256,"gap_open_log_score":-8.0,"gap_extend_log_score":-2.0,"quality_error_floor":0.001,"outlier_log_floor":-12.0},"fragment_pool":"identical names for all paths, recruited by unique source-anchor 31-mers on either mate; prefer R1 when both qualify, fixed anchor before alignment, no conditioning on the other mate placement; empirical weights are not renormalized over found hits","maximum_paths_per_anchor":MAX_PATHS,"maximum_search_states_per_anchor":MAX_STATES,"maximum_pending_states_per_anchor":MAX_STATES,"search_order":"increasing accumulated intermediate bases, then full node history and target ID; scheduling only, not a selection score","maximum_intermediate_bases":max_bases,"context_bases":context,"selection":{"minimum_score_margin":10.0,"minimum_margin_over_root_sum_squared_deltas":3.0,"strong_fragment_log_margin":2.3,"minimum_spanning_fragments":settings.min_junction_fragments,"max_strong_minor_major_ratio":settings.max_error_fraction},"scan":scan,"distinct_scored_fragment_names":names.len(),"anchor_count":anchors.len(),"short_terminal_anchor_count":short_terminal_anchors,"selected_connections":connections.len(),"loci":reports}),
     })
 }
 
@@ -839,6 +891,186 @@ pub(super) fn resolve(
 mod tests {
     use super::super::threading::Segment;
     use super::*;
+
+    fn walk_graph(sequences: &[&[u8]], outgoing: Vec<Vec<usize>>) -> PathGraph {
+        PathGraph {
+            segments: sequences
+                .iter()
+                .map(|sequence| Segment {
+                    sequence: sequence.to_vec(),
+                    circular: false,
+                })
+                .collect(),
+            outgoing,
+        }
+    }
+
+    #[test]
+    fn finite_walks_preserve_equal_cost_histories_and_ignore_edge_order() {
+        let mut graph = walk_graph(
+            &[b"GGGA", b"ACA", b"AGA", b"ATA", b"ACT", b"ATATA"],
+            vec![vec![1, 2, 4, 5], vec![3], vec![3], vec![4], vec![], vec![3]],
+        );
+        let anchors = HashSet::from([0, 4]);
+        let a = enumerate(&graph, 0, &anchors, 1, 100, 20, 20);
+        assert!(!a.exhausted && !a.length_limited);
+        let histories: BTreeSet<_> = a.routes.iter().map(|r| r.nodes.clone()).collect();
+        assert_eq!(
+            histories,
+            BTreeSet::from([vec![], vec![1, 3], vec![2, 3], vec![5, 3]])
+        );
+        let sequences: Vec<_> = a.routes.iter().map(|r| r.sequence.clone()).collect();
+        assert_eq!(
+            sequences,
+            [
+                b"GGGACT".to_vec(),
+                b"GGGACATACT".to_vec(),
+                b"GGGAGATACT".to_vec(),
+                b"GGGATATATACT".to_vec()
+            ]
+        );
+        for next in &mut graph.outgoing {
+            next.reverse();
+        }
+        let b = enumerate(&graph, 0, &anchors, 1, 100, 20, 20);
+        assert_eq!(
+            sequences,
+            b.routes
+                .iter()
+                .map(|r| r.sequence.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn complex_repeat_does_not_starve_short_exit_or_become_complete() {
+        // The self edge and two-node return make this SCC non-simple. DFS
+        // spends its path quota at the length boundary before this short exit.
+        let graph = walk_graph(
+            &[b"GGGA", b"AAA", b"ACA", b"ATG"],
+            vec![vec![1], vec![1, 2, 3], vec![1], vec![]],
+        );
+        let anchors = HashSet::from([0, 3]);
+        assert!(repeats::cycles(&graph, &anchors, 1).is_empty());
+        let locus = enumerate(&graph, 0, &anchors, 1, 200, 20, 20);
+        assert_eq!(locus.routes[0].nodes, [1]);
+        assert_eq!(locus.routes[0].sequence, b"GGGAAATG");
+        assert_eq!(locus.routes.len(), MAX_PATHS);
+        assert!(locus.exhausted && locus.path_limited);
+        assert!(!locus.cycle_expansion_limited && !locus.state_limited);
+        assert!(locus.selected.is_none());
+        assert!(locus.routes.iter().any(|r| r.nodes == [1, 2, 1]));
+        assert!(locus
+            .routes
+            .windows(2)
+            .all(|r| r[0].sequence.len() <= r[1].sequence.len()));
+    }
+
+    #[test]
+    fn pending_walk_limit_is_explicitly_incomplete() {
+        let graph = PathGraph {
+            segments: (0..MAX_STATES + 2)
+                .map(|_| Segment {
+                    sequence: b"AA".to_vec(),
+                    circular: false,
+                })
+                .collect(),
+            outgoing: std::iter::once((1..MAX_STATES + 2).collect())
+                .chain((0..MAX_STATES + 1).map(|_| Vec::new()))
+                .collect(),
+        };
+        let locus = enumerate(&graph, 0, &HashSet::from([0, MAX_STATES + 1]), 1, 10, 2, 2);
+        assert!(locus.exhausted && locus.frontier_limited);
+        assert_eq!(locus.frontier_peak, MAX_STATES);
+        assert!(locus.routes.is_empty() && locus.selected.is_none());
+    }
+
+    #[test]
+    fn finite_candidate_set_matches_dag_oracle_and_reverse_views() {
+        let graph = walk_graph(
+            &[b"GGGA", b"ACA", b"AGA", b"ATA", b"ACT", b"ATATA", b"AAC"],
+            vec![
+                vec![1, 2, 4, 5],
+                vec![3],
+                vec![3],
+                vec![4, 6],
+                vec![],
+                vec![3],
+                vec![],
+            ],
+        );
+        fn oracle(
+            graph: &PathGraph,
+            node: usize,
+            seq: Vec<u8>,
+            out: &mut BTreeSet<(usize, Vec<u8>)>,
+        ) {
+            if graph.outgoing[node].is_empty() {
+                out.insert((node, seq));
+            } else {
+                for &next in &graph.outgoing[node] {
+                    let next_seq = [seq.as_slice(), &graph.segments[next].sequence[1..]].concat();
+                    oracle(graph, next, next_seq, out);
+                }
+            }
+        }
+        let mut expected = BTreeSet::new();
+        oracle(&graph, 0, graph.segments[0].sequence.clone(), &mut expected);
+        let anchors = HashSet::from([0, 4, 6]);
+        let result = enumerate(&graph, 0, &anchors, 1, 100, 100, 20);
+        assert!(!result.exhausted && !result.length_limited);
+        assert_eq!(
+            expected,
+            result
+                .routes
+                .iter()
+                .map(|r| (r.to, r.sequence.clone()))
+                .collect()
+        );
+        let mut reverse = PathGraph {
+            segments: graph
+                .segments
+                .iter()
+                .map(|s| Segment {
+                    sequence: kmer::reverse_complement(&s.sequence),
+                    circular: false,
+                })
+                .collect(),
+            outgoing: vec![Vec::new(); graph.segments.len()],
+        };
+        for (from, next) in graph.outgoing.iter().enumerate() {
+            for &to in next {
+                reverse.outgoing[to].push(from);
+            }
+        }
+        for from in [4, 6] {
+            let reversed = enumerate(&reverse, from, &anchors, 1, 100, 100, 20);
+            let expected: BTreeSet<_> = expected
+                .iter()
+                .filter(|(to, _)| *to == from)
+                .map(|(_, seq)| kmer::reverse_complement(seq))
+                .collect();
+            assert!(!reversed.exhausted && !reversed.length_limited);
+            assert_eq!(
+                expected,
+                reversed.routes.iter().map(|r| r.sequence.clone()).collect()
+            );
+        }
+    }
+
+    #[test]
+    fn visited_state_budget_cannot_claim_no_path_or_complete_search() {
+        // A complex repeat with a dead exit has many histories but no target.
+        // Its queued frontier stays below the independent pending-state cap.
+        let graph = walk_graph(
+            &[b"AA", b"AA", b"AA", b"AA", b"AA"],
+            vec![vec![1], vec![1, 2, 3], vec![1], vec![], vec![]],
+        );
+        let locus = enumerate(&graph, 0, &HashSet::from([0, 4]), 1, 1_000_000, 2, 2);
+        assert!(locus.exhausted && locus.state_limited);
+        assert!(!locus.path_limited && !locus.frontier_limited && !locus.length_limited);
+        assert!(locus.routes.is_empty());
+    }
 
     #[test]
     fn incomplete_fragments_cannot_be_treated_as_zero_contrast() {
@@ -966,6 +1198,7 @@ mod tests {
             reverse: false,
             logp: 0.0,
             edits: 0,
+            traceback: None,
         };
         let route = Route {
             circle_length: None,
@@ -979,10 +1212,12 @@ mod tests {
         let one = Placements {
             hits: vec![hit.clone()],
             exhausted: false,
+            complete: false,
         };
         let many = Placements {
             hits: vec![hit; 10],
             exhausted: false,
+            complete: false,
         };
         assert_eq!(
             joint(&one, &one, &route, None, 0.0, (0, false, 3)),
@@ -1009,7 +1244,7 @@ mod tests {
         assert!(locus.routes.iter().any(|r| r.nodes.len() == 5));
         assert!(locus.selected.is_none());
         let large = enumerate(&graph, 0, &HashSet::from([0, 2]), 62, 100_000, 300, 100);
-        assert!(large.exhausted && large.length_limited);
+        assert!(large.exhausted && large.length_limited && large.cycle_expansion_limited);
         assert_eq!(large.routes.len(), MAX_PATHS);
         assert!(large.states <= MAX_PATHS + 1);
     }
