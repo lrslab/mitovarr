@@ -12,10 +12,104 @@ const MAX_ENDPOINT_PAIRS: usize = 10_000;
 
 struct SearchGraph<'a> {
     outgoing: &'a HashMap<kmer::Code, Vec<(kmer::Code, u8)>>,
-    reaches_target: HashSet<kmer::Code>,
+    reaches_target: Reachable<'a>,
+}
+
+/// All target labels share one reverse worklist. Each bit retains the exact
+/// per-target reachable domain, including duplicate target suffixes; a union
+/// alone would change search budgets and incomplete-competitor vetoes.
+struct Reachability {
+    nodes: kmer::Map<usize>,
+    labels: Vec<u64>,
+    words: usize,
+}
+
+enum Reachable<'a> {
+    #[cfg(test)]
+    Single(HashSet<kmer::Code>),
+    Shared(&'a Reachability, usize),
+}
+
+impl Reachable<'_> {
+    fn contains(&self, node: &kmer::Code) -> bool {
+        match self {
+            #[cfg(test)]
+            Self::Single(nodes) => nodes.contains(node),
+            Self::Shared(all, target) => all.nodes.get(node).is_some_and(|&id| {
+                all.labels[id * all.words + target / 64] & (1u64 << (target % 64)) != 0
+            }),
+        }
+    }
+}
+
+impl Reachability {
+    fn new(
+        outgoing: &HashMap<kmer::Code, Vec<(kmer::Code, u8)>>,
+        targets: &[kmer::Code],
+        k: usize,
+    ) -> Self {
+        let mut codes: Vec<_> = outgoing
+            .keys()
+            .copied()
+            .chain(targets.iter().copied())
+            .collect();
+        codes.sort_unstable();
+        codes.dedup();
+        let nodes: kmer::Map<_> = codes
+            .iter()
+            .enumerate()
+            .map(|(id, &node)| (node, id))
+            .collect();
+        let words = targets.len().div_ceil(64);
+        let mut labels = vec![0u64; words * codes.len()];
+        let mut queued = vec![false; codes.len()];
+        let mut pending = std::collections::VecDeque::new();
+        for (target, node) in targets.iter().enumerate() {
+            let id = nodes[node];
+            labels[id * words + target / 64] |= 1u64 << (target % 64);
+            if !queued[id] {
+                pending.push_back(id);
+                queued[id] = true;
+            }
+        }
+        let mut added = vec![0u64; words];
+        while let Some(id) = pending.pop_front() {
+            queued[id] = false;
+            let node = codes[id];
+            added.copy_from_slice(&labels[id * words..(id + 1) * words]);
+            for base in 0..4u128 {
+                let predecessor = (base << (2 * (k - 2))) | (node >> 2);
+                if !outgoing
+                    .get(&predecessor)
+                    .is_some_and(|edges| edges.iter().any(|&(next, _)| next == node))
+                {
+                    continue;
+                }
+                let previous = nodes[&predecessor];
+                let mut changed = false;
+                for (old, &bits) in labels[previous * words..(previous + 1) * words]
+                    .iter_mut()
+                    .zip(&added)
+                {
+                    changed |= bits & !*old != 0;
+                    *old |= bits;
+                }
+                if changed && !queued[previous] {
+                    queued[previous] = true;
+                    pending.push_back(previous);
+                }
+            }
+        }
+        Self {
+            nodes,
+            labels,
+            words,
+        }
+    }
 }
 
 impl<'a> SearchGraph<'a> {
+    #[cfg(test)]
     fn new(
         outgoing: &'a HashMap<kmer::Code, Vec<(kmer::Code, u8)>>,
         targets: &HashMap<kmer::Code, Vec<usize>>,
@@ -42,7 +136,7 @@ impl<'a> SearchGraph<'a> {
         }
         Self {
             outgoing,
-            reaches_target,
+            reaches_target: Reachable::Single(reaches_target),
         }
     }
 }
@@ -378,42 +472,41 @@ pub(super) fn augment(
                 .or_default()
                 .push(to);
         }
-        // One adjacency map and one target reachability set at a time. The
-        // first pass records only which sources can reach each target suffix;
-        // the second reuses each target's set across every source search.
-        // This avoids retaining a graph-sized set for every endpoint.
+        let target_nodes: Vec<_> = sinks
+            .iter()
+            .map(|&to| code(&graph.segments[to].sequence[overlap - small_k + 1..overlap]))
+            .collect();
+        let reachability = Reachability::new(&outgoing, &target_nodes, small_k);
         let mut plans = Vec::new();
         let mut reachable_counts = HashMap::<usize, usize>::new();
-        for &to in &sinks {
-            let target = HashMap::from([(
-                code(&graph.segments[to].sequence[overlap - small_k + 1..overlap]),
-                vec![to],
-            )]);
-            let small_graph = SearchGraph::new(&outgoing, &target, small_k);
+        for (index, &to) in sinks.iter().enumerate() {
+            let target = HashMap::from([(target_nodes[index], vec![to])]);
+            let domain = Reachable::Shared(&reachability, index);
             let reachable: HashSet<_> = sources
                 .iter()
                 .copied()
                 .filter(|&from| {
-                    let s = &graph.segments[from].sequence;
-                    small_graph
-                        .reaches_target
-                        .contains(&code(&s[s.len() - small_k + 1..]))
+                    let sequence = &graph.segments[from].sequence;
+                    domain.contains(&code(&sequence[sequence.len() - small_k + 1..]))
                 })
                 .collect();
             for &from in &reachable {
                 *reachable_counts.entry(from).or_default() += 1;
             }
-            plans.push((to, target, reachable));
+            plans.push((index, to, target, reachable));
         }
         let mut totals: BTreeMap<_, Search> = sources
             .iter()
             .map(|&from| (from, Search::default()))
             .collect();
-        for (to, target, reachable) in plans {
+        for (index, to, target, reachable) in plans {
             let small_graph = if reachable.is_empty() {
                 None
             } else {
-                Some(SearchGraph::new(&outgoing, &target, small_k))
+                Some(SearchGraph {
+                    outgoing: &outgoing,
+                    reaches_target: Reachable::Shared(&reachability, index),
+                })
             };
             for &from in &sources {
                 let count = reachable_counts.get(&from).copied().unwrap_or(0);
@@ -620,6 +713,28 @@ mod tests {
                 .collect(),
             outgoing: vec![vec![]; sequences.len()],
         }
+    }
+
+    #[test]
+    fn shared_reverse_worklist_matches_each_target_bfs_with_cycles_and_duplicate_suffixes() {
+        let edges = small_edges(&[b"AACGTTGACG", b"AATTTT", b"CCCATG", b"GGGG"], 3);
+        let targets: Vec<_> = (0..140)
+            .map(|i| [code(b"CG"), code(b"TT"), code(b"TA")][i % 3])
+            .collect();
+        let all = Reachability::new(&edges, &targets, 3);
+        for (i, &node) in targets.iter().enumerate() {
+            let single = SearchGraph::new(&edges, &HashMap::from([(node, vec![i])]), 3);
+            let shared = Reachable::Shared(&all, i);
+            for possible in 0..16 {
+                assert_eq!(
+                    shared.contains(&possible),
+                    single.reaches_target.contains(&possible),
+                    "target {i}, node {possible}"
+                );
+            }
+        }
+        let empty = Reachability::new(&edges, &[], 3);
+        assert!(empty.labels.is_empty());
     }
 
     #[test]
