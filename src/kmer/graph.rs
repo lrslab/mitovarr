@@ -1,6 +1,9 @@
 //! Exact graph k-mers through 127 bases. The short seed indexes keep their
 //! existing u128 representation; only assembly graph keys use two words.
 
+pub(crate) type Map<V> =
+    std::collections::HashMap<Code, V, std::hash::BuildHasherDefault<super::KmerHasher>>;
+
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Code {
     high: u128,
@@ -121,6 +124,9 @@ pub fn visit(
         }
     }
 }
+
+pub(crate) type Set =
+    std::collections::HashSet<Code, std::hash::BuildHasherDefault<super::KmerHasher>>;
 
 #[cfg(test)]
 mod tests {

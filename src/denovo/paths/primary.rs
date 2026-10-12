@@ -364,7 +364,7 @@ fn add_open_ends(regions: &mut Vec<Region>, length: usize) {
     }
 }
 
-fn support_mass(candidate: &Candidate, counts: &HashMap<graph_kmer::Code, u32>, k: usize) -> u64 {
+fn support_mass(candidate: &Candidate, counts: &graph_kmer::Map<u32>, k: usize) -> u64 {
     let mut sequence = candidate.sequence.clone();
     if candidate.circular && !sequence.is_empty() {
         sequence.extend(candidate.sequence.iter().copied().cycle().take(k - 1));
@@ -381,7 +381,7 @@ fn support_mass(candidate: &Candidate, counts: &HashMap<graph_kmer::Code, u32>, 
 
 pub(in crate::denovo) fn write_outputs(
     candidates: Vec<Primary>,
-    counts: &HashMap<graph_kmer::Code, u32>,
+    counts: &graph_kmer::Map<u32>,
     k: usize,
     out: &Path,
     final_candidate: Option<&Candidate>,
@@ -531,12 +531,7 @@ mod tests {
         }
     }
 
-    fn add_counts(
-        counts: &mut HashMap<graph_kmer::Code, u32>,
-        candidate: &Candidate,
-        count: u32,
-        k: usize,
-    ) {
+    fn add_counts(counts: &mut graph_kmer::Map<u32>, candidate: &Candidate, count: u32, k: usize) {
         let mut sequence = candidate.sequence.clone();
         if candidate.circular {
             sequence.extend(candidate.sequence.iter().copied().cycle().take(k - 1));
@@ -622,7 +617,7 @@ mod tests {
         let sequence = b"ACGTTAGGCATCTGAACCTGTAGTCCGATCAATGCG".to_vec();
         let k = 15;
         let extended = [sequence.clone(), sequence.clone()].concat();
-        let mut counts = HashMap::new();
+        let mut counts = graph_kmer::Map::default();
         graph_kmer::visit(&extended, None, k, 0, |_, code| {
             counts.insert(graph_kmer::canonical(code, k), 20);
         });
@@ -678,7 +673,7 @@ mod tests {
         );
         let expected_linear = linear.candidate.sequence.clone();
         let expected_circle = best.candidate.sequence.clone();
-        let mut counts = HashMap::new();
+        let mut counts = graph_kmer::Map::default();
         add_counts(&mut counts, &weaker.candidate, 2, k);
         add_counts(&mut counts, &best.candidate, 8, k);
         add_counts(&mut counts, &linear.candidate, 100, k);
@@ -741,7 +736,8 @@ mod tests {
             if reversed {
                 candidates.reverse();
             }
-            let (_, circle) = write_outputs(candidates, &HashMap::new(), 15, out, None).unwrap();
+            let (_, circle) =
+                write_outputs(candidates, &graph_kmer::Map::default(), 15, out, None).unwrap();
             assert_eq!(circle["canonical_kmer_support_mass"], 0);
             assert_eq!(
                 crate::io::fasta::load_reference(&out.join("best_circular.fasta"), None)
@@ -767,8 +763,14 @@ mod tests {
             json!({"type":"graph_segment"}),
         );
         let short = representative(b"ACGT", true, json!({"type":"graph_segment"}));
-        let (primary, circle) =
-            write_outputs(vec![linear, short], &HashMap::new(), 15, &out, None).unwrap();
+        let (primary, circle) = write_outputs(
+            vec![linear, short],
+            &graph_kmer::Map::default(),
+            15,
+            &out,
+            None,
+        )
+        .unwrap();
         assert_eq!(primary["circular"], false);
         assert_eq!(circle["status"], "unavailable");
         assert_eq!(circle["reason"], "no_eligible_circular_candidate");
@@ -808,7 +810,7 @@ mod tests {
             true,
             json!({"type":"graph_segment"}),
         );
-        let mut counts = HashMap::new();
+        let mut counts = graph_kmer::Map::default();
         add_counts(&mut counts, &heavy_circle.candidate, 100, 15);
         assert!(
             support_mass(&heavy_circle.candidate, &counts, 15)

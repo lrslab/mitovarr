@@ -25,7 +25,7 @@ pub(super) fn remove(
         }
         x
     }
-    let mut by_node: HashMap<graph_kmer::Code, usize> = HashMap::new();
+    let mut by_node: graph_kmer::Map<usize> = graph_kmer::Map::default();
     for (id, u) in unitigs.iter().enumerate() {
         let mut keys = vec![
             graph_kmer::canonical(u.from, k - 1),
@@ -63,7 +63,7 @@ pub(super) fn remove(
     }
     // Strongest retained support per canonical 31-mer, filled in decreasing
     // component strength so a shadow can only point at a retained competitor.
-    let mut strongest = HashMap::<crate::kmer::Code, (f64, usize)>::new();
+    let mut strongest = crate::kmer::Map::<(f64, usize)>::default();
     let mut removed = HashSet::new();
     let (mut removed_kmers, mut removed_components) = (0usize, 0usize);
     let mut protected_weak_link_components = 0usize;
@@ -151,8 +151,8 @@ mod tests {
             .collect()
     }
 
-    fn counts(sequences: &[(&[u8], u32)], k: usize) -> HashMap<graph_kmer::Code, u32> {
-        let mut result = HashMap::new();
+    fn counts(sequences: &[(&[u8], u32)], k: usize) -> graph_kmer::Map<u32> {
+        let mut result = graph_kmer::Map::default();
         for &(sequence, support) in sequences {
             graph_kmer::visit(sequence, None, k, 0, |_, code| {
                 *result.entry(graph_kmer::canonical(code, k)).or_default() += support;

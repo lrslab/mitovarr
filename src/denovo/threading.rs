@@ -75,8 +75,8 @@ pub(super) fn candidates(
 ) -> Result<Threaded> {
     let k = settings.k;
     let anchor_kmers = 5;
-    let mut starts: HashMap<graph_kmer::Code, Vec<usize>> = HashMap::new();
-    let mut ends: HashMap<graph_kmer::Code, Vec<usize>> = HashMap::new();
+    let mut starts: graph_kmer::Map<Vec<usize>> = graph_kmer::Map::default();
+    let mut ends: graph_kmer::Map<Vec<usize>> = graph_kmer::Map::default();
     for (id, unitig) in unitigs.iter().enumerate() {
         starts.entry(unitig.from).or_default().push(id);
         ends.entry(unitig.to).or_default().push(id);

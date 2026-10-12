@@ -19,7 +19,7 @@ use crate::{
 use anyhow::{ensure, Result};
 use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     fs::File,
     io::{BufWriter, Write},
     path::Path,
@@ -99,8 +99,8 @@ fn normalize(sequence: &[u8], circular: bool) -> Vec<u8> {
 fn walk(
     first: usize,
     edges: &[Edge],
-    outgoing: &HashMap<graph_kmer::Code, Vec<usize>>,
-    incoming: &HashMap<graph_kmer::Code, usize>,
+    outgoing: &graph_kmer::Map<Vec<usize>>,
+    incoming: &graph_kmer::Map<usize>,
     visited: &mut [bool],
     k: usize,
 ) -> Unitig {
@@ -149,7 +149,7 @@ fn walk(
 }
 
 fn graph(
-    counts: &HashMap<graph_kmer::Code, u32>,
+    counts: &graph_kmer::Map<u32>,
     k: usize,
     min_count: u32,
 ) -> (Vec<Edge>, Vec<Unitig>, usize) {
@@ -178,8 +178,8 @@ fn compact_at(
     k: usize,
     boundaries: &HashSet<graph_kmer::Code>,
 ) -> (Vec<Unitig>, usize) {
-    let mut outgoing: HashMap<graph_kmer::Code, Vec<usize>> = HashMap::new();
-    let mut incoming: HashMap<graph_kmer::Code, usize> = HashMap::new();
+    let mut outgoing: graph_kmer::Map<Vec<usize>> = graph_kmer::Map::default();
+    let mut incoming: graph_kmer::Map<usize> = graph_kmer::Map::default();
     for (id, edge) in edges.iter().enumerate() {
         outgoing.entry(edge.from).or_default().push(id);
         *incoming.entry(edge.to).or_default() += 1;
@@ -240,7 +240,7 @@ fn similar_paths(a: &[u8], b: &[u8], max_edits: usize) -> bool {
 fn stronger_bubble_path(
     weak_id: usize,
     unitigs: &[Unitig],
-    starts: &HashMap<graph_kmer::Code, Vec<usize>>,
+    starts: &graph_kmer::Map<Vec<usize>>,
     removed: &HashSet<graph_kmer::Code>,
     k: usize,
     fraction: f64,
@@ -316,7 +316,7 @@ fn stronger_bubble_path(
 fn has_structural_alternative(
     weak: &Unitig,
     unitigs: &[Unitig],
-    starts: &HashMap<graph_kmer::Code, Vec<usize>>,
+    starts: &graph_kmer::Map<Vec<usize>>,
     fraction: f64,
 ) -> bool {
     starts.get(&weak.from).into_iter().flatten().any(|&id| {
@@ -353,8 +353,8 @@ fn simplify_retaining_links(
     let mut alternatives = std::collections::BTreeMap::new();
     if fraction > 0.0 {
         loop {
-            let mut starts: HashMap<graph_kmer::Code, Vec<usize>> = HashMap::new();
-            let mut ends: HashMap<graph_kmer::Code, Vec<usize>> = HashMap::new();
+            let mut starts: graph_kmer::Map<Vec<usize>> = graph_kmer::Map::default();
+            let mut ends: graph_kmer::Map<Vec<usize>> = graph_kmer::Map::default();
             for (id, unitig) in unitigs.iter().enumerate() {
                 starts.entry(unitig.from).or_default().push(id);
                 ends.entry(unitig.to).or_default().push(id);
@@ -499,7 +499,7 @@ fn simplify_retaining_links(
 fn write_graph(out: &Path, unitigs: &[Unitig], k: usize) -> Result<()> {
     let mut writer = BufWriter::new(File::create(out.join("assembly_graph.gfa"))?);
     writeln!(writer, "H\tVN:Z:1.0")?;
-    let mut starts: HashMap<graph_kmer::Code, Vec<usize>> = HashMap::new();
+    let mut starts: graph_kmer::Map<Vec<usize>> = graph_kmer::Map::default();
     for (id, unitig) in unitigs.iter().enumerate() {
         writeln!(
             writer,
@@ -654,8 +654,8 @@ pub fn assemble(
             && settings.max_validation_pairs > 0,
         "assembly thresholds and limits must be positive"
     );
-    let mut counts = HashMap::<graph_kmer::Code, u32>::new();
-    let mut fragment = HashSet::new();
+    let mut counts = graph_kmer::Map::<u32>::default();
+    let mut fragment = graph_kmer::Set::default();
     let scan = fastq::scan_pairs(&reads.r1, &reads.r2, |_, a, b| {
         fragment.clear();
         for read in [a, b] {
@@ -954,8 +954,8 @@ mod cleanup_tests {
             .collect()
     }
 
-    fn counts(sequences: &[(&[u8], u32)], k: usize) -> HashMap<graph_kmer::Code, u32> {
-        let mut result = HashMap::new();
+    fn counts(sequences: &[(&[u8], u32)], k: usize) -> graph_kmer::Map<u32> {
+        let mut result = graph_kmer::Map::default();
         for &(s, n) in sequences {
             graph_kmer::visit(s, None, k, 0, |_, c| {
                 *result.entry(graph_kmer::canonical(c, k)).or_default() += n;
@@ -1036,7 +1036,7 @@ mod cleanup_tests {
             make(b"ATAT", 1000.0),
             make(b"ATCC", 10.0),
         ];
-        let mut starts = HashMap::<_, Vec<_>>::new();
+        let mut starts = graph_kmer::Map::<Vec<_>>::default();
         for (id, u) in unitigs.iter().enumerate() {
             starts.entry(u.from).or_default().push(id);
         }
@@ -1061,7 +1061,7 @@ mod cleanup_tests {
                 minor[220] = if minor[220] == b'A' { b'C' } else { b'A' };
             }
             let (_, unitigs, _) = graph(&counts(&[(&major, 100), (&minor, 10)], 63), 63, 3);
-            let mut starts = HashMap::<graph_kmer::Code, Vec<usize>>::new();
+            let mut starts = graph_kmer::Map::<Vec<usize>>::default();
             for (id, unitig) in unitigs.iter().enumerate() {
                 starts.entry(unitig.from).or_default().push(id);
             }

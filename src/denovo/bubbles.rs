@@ -75,7 +75,7 @@ pub(super) fn write(out: &Path, bubbles: &[Collapsed]) -> Result<()> {
 /// Canonical (k-1)-mer nodes unite the two orientations of each physical graph.
 #[derive(Default)]
 pub(super) struct Components {
-    nodes: HashMap<graph_kmer::Code, usize>,
+    nodes: graph_kmer::Map<usize>,
     bubbles: HashMap<usize, Vec<usize>>,
 }
 
@@ -90,7 +90,7 @@ fn root(parents: &mut [usize], mut node: usize) -> usize {
 
 impl Components {
     pub fn new(
-        counts: &HashMap<graph_kmer::Code, u32>,
+        counts: &graph_kmer::Map<u32>,
         bubbles: &[Collapsed],
         k: usize,
         minimum: u32,

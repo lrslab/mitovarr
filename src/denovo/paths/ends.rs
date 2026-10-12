@@ -325,8 +325,8 @@ pub(super) fn augment(
         if sources.is_empty() || sinks.is_empty() {
             break;
         }
-        let mut counts = HashMap::<kmer::Code, u32>::new();
-        let mut fragment = HashSet::new();
+        let mut counts = kmer::Map::<u32>::default();
+        let mut fragment = kmer::Set::default();
         fastq::scan_pairs(&reads.r1, &reads.r2, |_, a, b| {
             fragment.clear();
             for read in [a, b] {

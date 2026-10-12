@@ -2,6 +2,44 @@
 
 pub mod graph;
 
+/// Internal numeric-key tables. Iteration order must never choose a graph path.
+/// This deterministic, non-cryptographic hasher mixes every word of a k-mer;
+/// callers still sort graph edges and all externally ordered candidates.
+#[derive(Default)]
+pub(crate) struct KmerHasher(u64);
+
+impl std::hash::Hasher for KmerHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut words = bytes.chunks_exact(8);
+        for word in &mut words {
+            self.write_u64(u64::from_ne_bytes(word.try_into().expect("eight bytes")));
+        }
+        let mut tail = 0u64;
+        for (i, &byte) in words.remainder().iter().enumerate() {
+            tail |= u64::from(byte) << (8 * i);
+        }
+        if !words.remainder().is_empty() {
+            self.write_u64(tail);
+        }
+    }
+
+    fn write_u64(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+
+    fn write_u128(&mut self, word: u128) {
+        self.write_u64(word as u64);
+        self.write_u64((word >> 64) as u64);
+    }
+}
+
+pub(crate) type Map<V> =
+    std::collections::HashMap<Code, V, std::hash::BuildHasherDefault<KmerHasher>>;
+
 pub type Code = u128;
 
 pub fn reverse_code(code: Code, k: usize) -> Code {
@@ -70,6 +108,8 @@ pub fn reverse_complement(sequence: &[u8]) -> Vec<u8> {
         })
         .collect()
 }
+
+pub(crate) type Set = std::collections::HashSet<Code, std::hash::BuildHasherDefault<KmerHasher>>;
 
 #[cfg(test)]
 mod tests {
