@@ -241,7 +241,7 @@ fn stronger_bubble_path(
     weak_id: usize,
     unitigs: &[Unitig],
     starts: &graph_kmer::Map<Vec<usize>>,
-    removed: &HashSet<graph_kmer::Code>,
+    removed: &[bool],
     k: usize,
     fraction: f64,
 ) -> Option<bubbles::Alternative> {
@@ -277,11 +277,7 @@ fn stronger_bubble_path(
             {
                 continue;
             }
-            let mut unavailable = false;
-            graph_kmer::visit(&u.sequence, None, k, 0, |_, c| {
-                unavailable |= removed.contains(&c);
-            });
-            if unavailable {
+            if removed[id] {
                 continue;
             }
             let new_mass = mass + u.mean_count * n as f64;
@@ -308,6 +304,27 @@ fn stronger_bubble_path(
         }
     }
     None
+}
+
+/// A compacted unitig and its reverse-complement twin share a minimum
+/// canonical edge, even when a circular twin starts at a different vertex.
+/// Each directed edge belongs to exactly one unitig, so this key is unique
+/// to that pair (or to one self-conjugate unitig).
+fn unitig_twins(unitigs: &[Unitig], k: usize) -> Vec<usize> {
+    let mut owners = graph_kmer::Map::default();
+    let mut twins: Vec<_> = (0..unitigs.len()).collect();
+    for (id, unitig) in unitigs.iter().enumerate() {
+        let mut key = None;
+        graph_kmer::visit(&unitig.sequence, None, k, 0, |_, code| {
+            let code = graph_kmer::canonical(code, k);
+            key = Some(key.map_or(code, |old: graph_kmer::Code| old.min(code)));
+        });
+        if let Some(other) = owners.insert(key.expect("unitig edge"), id) {
+            twins[id] = other;
+            twins[other] = id;
+        }
+    }
+    twins
 }
 
 /// A longer/shorter alternative with the same full graph flanks is retained
@@ -395,6 +412,8 @@ fn simplify_retaining_links(
             let tips = removed.len() / 2;
             // Recompact after tip clipping before interpreting bubbles.
             if removed.is_empty() {
+                let twins = unitig_twins(&unitigs, k);
+                let mut unavailable = vec![false; unitigs.len()];
                 let mut order: Vec<_> = (0..unitigs.len()).collect();
                 order
                     .sort_by_key(|id| (unitigs[*id].max_count, unitigs[*id].from, unitigs[*id].to));
@@ -408,9 +427,14 @@ fn simplify_retaining_links(
                     {
                         continue;
                     }
-                    if let Some(alternative) =
-                        stronger_bubble_path(id, &unitigs, &starts, &removed, k, bubble_fraction)
-                    {
+                    if let Some(alternative) = stronger_bubble_path(
+                        id,
+                        &unitigs,
+                        &starts,
+                        &unavailable,
+                        k,
+                        bubble_fraction,
+                    ) {
                         // The more permissive cleanup may improve the primary,
                         // but must not erase evidence needed for final status.
                         let conservative = unitig.sequence.len() - k < 2 * k
@@ -422,6 +446,8 @@ fn simplify_retaining_links(
                             let bubble = bubbles::Collapsed::new(unitig, alternative);
                             alternatives.entry(bubble.removed.clone()).or_insert(bubble);
                         }
+                        unavailable[id] = true;
+                        unavailable[twins[id]] = true;
                         graph_kmer::visit(&unitig.sequence, None, k, 0, |_, code| {
                             removed.insert(code);
                             removed.insert(graph_kmer::reverse_code(code, k));
@@ -1040,7 +1066,10 @@ mod cleanup_tests {
         for (id, u) in unitigs.iter().enumerate() {
             starts.entry(u.from).or_default().push(id);
         }
-        assert!(stronger_bubble_path(0, &unitigs, &starts, &HashSet::new(), k, 0.2).is_none());
+        assert!(
+            stronger_bubble_path(0, &unitigs, &starts, &vec![false; unitigs.len()], k, 0.2)
+                .is_none()
+        );
     }
 
     #[test]
@@ -1051,6 +1080,45 @@ mod cleanup_tests {
         let (mut edges, _, _) = graph(&input, 63, 3);
         let (_, _, stats, _) = simplify(&mut edges, 63, 0.2, 0.49);
         assert_eq!(stats["bubble_kmers_removed"], 0);
+    }
+    #[test]
+    fn twin_flags_match_deleted_edge_membership_for_linear_and_circular_unitigs() {
+        for k in [31, 63, 95, 127] {
+            let major = dna(700);
+            let mut alternate = major.clone();
+            alternate[310] = if alternate[310] == b'A' { b'C' } else { b'A' };
+            let circle = &major[100..180];
+            let circular: Vec<_> = circle
+                .iter()
+                .cycle()
+                .take(circle.len() + k - 1)
+                .copied()
+                .collect();
+            let (_, unitigs, _) = graph(
+                &counts(&[(&major, 100), (&alternate, 15), (&circular, 5)], k),
+                k,
+                3,
+            );
+            let twins = unitig_twins(&unitigs, k);
+            for (removed_id, unitig) in unitigs.iter().enumerate() {
+                let mut removed = HashSet::new();
+                graph_kmer::visit(&unitig.sequence, None, k, 0, |_, code| {
+                    removed.insert(code);
+                    removed.insert(graph_kmer::reverse_code(code, k));
+                });
+                for (id, other) in unitigs.iter().enumerate() {
+                    let mut unavailable = false;
+                    graph_kmer::visit(&other.sequence, None, k, 0, |_, code| {
+                        unavailable |= removed.contains(&code)
+                    });
+                    assert_eq!(
+                        unavailable,
+                        id == removed_id || id == twins[removed_id],
+                        "k={k}, removed={removed_id}, other={id}"
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn structural_link_protection_requires_distinct_lengths_and_shared_full_flanks() {

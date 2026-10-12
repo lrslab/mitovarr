@@ -6,6 +6,10 @@
   reciprocal views. Report partial-primary allele evidence separately, retain
   unresolved conflicts, and preserve strict join/publication criteria.
 
+- Use internal numeric-key hashing, shared reverse target-label propagation and
+  constant-time deleted-unitig/twin checks in de novo graph work, preserving
+  candidate ordering and per-target budgets without adding dependencies.
+
 - Skip read scoring for paths/cycle families that cannot be selected; retain
   candidate exports and report unmeasured evidence as null with `read_scoring`,
   including fragment scores nested in repeat-copy diagnostics.

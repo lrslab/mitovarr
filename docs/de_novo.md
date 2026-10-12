@@ -274,3 +274,9 @@ a coverage hypothesis final; see [shared layout evidence](paired_paths.md#shared
 Whole-layout scores use a fixed query/target common-flank pivot and report ties,
 unknown reasons and compressed per-fragment span contributions. The displayed
 coverage representative remains unchanged by diagnostic scores.
+
+The de novo graph-count, node-index and per-pair deduplication tables use an
+internal deterministic numeric-key hasher without new dependencies. Full k-mer
+words remain the keys, and graph/candidate ordering is explicitly sorted. Bubble
+search marks unavailable unitigs and their reverse-complement twins once per
+cleanup round, instead of revisiting every k-mer for each competitor lookup.

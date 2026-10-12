@@ -309,6 +309,11 @@ depths remain available. A locus without candidates uses
 same read pool and scoring. The cycle read scan is omitted when its index is
 empty; repeat-depth diagnostics continue to scan all input pairs.
 
+End searches propagate all target labels together on one reverse worklist. A
+separate bit for each target preserves its reachable domain and the existing
+per-target state/path budget. This does not replace target-specific reachability
+with a union or change search completion, proposal admission or reported states.
+
 ### Partial-primary allele support and reciprocal choices
 
 Partial primary paths additionally record `primary_spanning_interval`,
