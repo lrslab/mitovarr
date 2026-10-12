@@ -31,6 +31,31 @@ Retained k-mers become two directed edges, one for each strand, between their (k
 
 Deletions are symmetric across reverse complements. Local competing support is used instead of a global high-coverage cutoff. Setting `--max-error-fraction 0` disables these operations. Setting `--max-bubble-fraction 0` disables bubble collapse alone. Both ratios must be at least zero and below 0.5. The report records both thresholds and the bubble coverage/edit/search rules. These are consensus heuristics: low-frequency biological alleles or structural paths can also be removed, so the output is not a heteroplasmy estimate.
 
+After local simplification, a separate pass removes disconnected sequencing-error
+shadows. Components are joined through canonical (k−1)-base nodes so both
+strands are decided together; circular strand views share a canonical node.
+Process components by decreasing maximum k-mer support. Remove a component
+when its maximum is at most `--max-error-fraction` (default 0.2) times the mean
+support of an already retained unitig sharing a canonical 31-mer. Components
+without a shared seed, and stronger isolated homologs, remain. Filter the
+removed edges and compact again; original sample k-mer counts remain intact.
+This pass is skipped when `--max-error-fraction 0` is used.
+
+`graph_simplification.shadow_components` records the rule, strand-collapsed
+component count and removed directed k-mer count; it is null when disabled.
+The existing `cleaned_canonical_kmers` and `cleaned_directed_branch_nodes` now
+refer to the graph after this pass. A connected bubble or deletion is not a
+separate component for this rule. Earlier tip/bubble/weak-link rules still
+apply: these checks do not guarantee retention of every low-frequency allele.
+A weak-link remnant remains protected only when its original unitig had a
+stronger unitig between the same full graph flanks, a length difference above
+three bases, and sufficient support at every stronger-arm k-mer; `protected_weak_link_components` counts qualifying shadows kept
+for that reason. This preserves minor deletion-junction candidates instead of
+erasing them merely because the earlier cleanup disconnected their boundaries.
+Isolated homologous biological sequence at or below the threshold, including
+NUMT fragments, can also be removed. No reference or quality-only branch
+classification is used, and complete-publication checks remain unchanged.
+
 Permissive collapse does not establish structural uniqueness. If a removed bubble fails the conservative conditions (both arms at most 2k edges, at most three edits, and the weak arm's maximum support at most `--max-error-fraction` times every retained edge's support), both spellings are saved in `bubble_alternatives.fasta` and reported in `graph_simplification.retained_bubble_alternatives`. These are retained hypotheses, not independent variant calls. The primary may use the simplified graph, but a final candidate touching the original supported graph component of any such bubble remains unresolved with `supported_bubble_alternatives`. A disconnected component does not veto an otherwise supported main circle. Component membership is determined from the existing in-memory sample k-mers, before cleanup, so subsequent overlapping collapses cannot erase the uncertainty. No additional input scan is needed.
 
 `primary_ambiguity.tsv` adds `collapsed_bubble_component_unresolved` across the affected primary sequence. This is deliberately a component-wide flag, not an inferred local variant interval. `validation.passed` continues to describe read coverage and junction checks; a final assembly also requires an empty `validation.unresolved_collapsed_bubbles` list. Balanced or phased supported alternatives still use the existing path-resolution rules. The conservative cleanup remains a consensus heuristic and is not proof that every low-frequency allele was an error.

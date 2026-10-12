@@ -66,11 +66,71 @@ struct Route {
     // A pure SNP bubble contains shared k-1 overlaps on both sides. Those
     // shared bases are not the allele whose spanning support is being counted.
     snp_interval: Option<(usize, usize)>,
+    // Additional allele support is for the partial primary only. Strict joins
+    // retain their original graph-corridor / single-SNP spanning requirement.
+    primary_interval: Option<(usize, usize)>,
 }
 impl Route {
     fn spanning_interval(&self) -> (usize, usize) {
         self.snp_interval
             .unwrap_or((self.left_end, self.right_start))
+    }
+
+    fn primary_spanning_interval(&self) -> (usize, usize) {
+        self.primary_interval.unwrap_or(self.spanning_interval())
+    }
+}
+
+/// Locate every difference within one shared source/target corridor, including
+/// the full range of equivalent indel placements in a homopolymer. This never
+/// changes the interval used to grant a strict join or complete publication.
+fn identify_primary_allele(from: usize, routes: &mut [Route]) {
+    let Some(first) = routes.first() else { return };
+    if routes.len() < 2
+        || first.to == from
+        || routes
+            .iter()
+            .any(|r| r.to != first.to || r.circle_length.is_some())
+        || routes.iter().all(|r| r.sequence == first.sequence)
+    {
+        return;
+    }
+    let prefix = routes
+        .iter()
+        .map(|r| {
+            r.sequence
+                .iter()
+                .zip(&first.sequence)
+                .take_while(|(a, b)| a == b)
+                .count()
+        })
+        .min()
+        .unwrap();
+    let suffix = routes
+        .iter()
+        .map(|r| {
+            r.sequence
+                .iter()
+                .rev()
+                .zip(first.sequence.iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count()
+        })
+        .min()
+        .unwrap();
+    let shortest = routes.iter().map(|r| r.sequence.len()).min().unwrap();
+    let start = prefix.min(shortest - suffix);
+    let ambiguous_overlap = prefix.saturating_sub(shortest - suffix);
+    // Shared flanks must stay outside the differing block on every route.
+    // Different exits and differences inside anchors are not local alleles.
+    if routes.iter().any(|r| {
+        let end = r.sequence.len() - suffix + ambiguous_overlap;
+        start < r.left_end || end > r.right_start || start < FLANK || end + FLANK > r.sequence.len()
+    }) {
+        return;
+    }
+    for r in routes {
+        r.primary_interval = Some((start, r.sequence.len() - suffix + ambiguous_overlap));
     }
 }
 
@@ -132,6 +192,8 @@ struct Locus {
     delta_squares: Vec<Vec<f64>>,
     strong_votes: Vec<Vec<u32>>,
     spanning: Vec<u32>,
+    primary_spanning: Vec<u32>,
+    primary_strong_votes: Vec<Vec<u32>>,
     selected: Option<usize>,
 }
 
@@ -194,6 +256,7 @@ fn enumerate(
                     left_end: left.len() - overlap,
                     right_start,
                     snp_interval: None,
+                    primary_interval: None,
                 });
                 if routes.len() >= MAX_PATHS && !frontier.pending.is_empty() {
                     exhausted = true;
@@ -264,6 +327,7 @@ fn enumerate(
         }
     }
     identify_single_snp(from, &mut routes);
+    identify_primary_allele(from, &mut routes);
     let n = routes.len();
     let indexes = routes
         .iter()
@@ -294,6 +358,8 @@ fn enumerate(
         delta_squares: vec![vec![0.0; n]; n],
         strong_votes: vec![vec![0; n]; n],
         spanning: vec![0; n],
+        primary_spanning: vec![0; n],
+        primary_strong_votes: vec![vec![0; n]; n],
         selected: None,
     }
 }
@@ -305,9 +371,9 @@ fn joint(
     model: Option<&Library>,
     baseline: f64,
     pivot: (isize, bool, usize),
-) -> (f64, bool) {
+) -> (f64, bool, bool) {
     if a.hits.is_empty() || b.hits.is_empty() {
-        return (-12.0, false);
+        return (-12.0, false, false);
     }
     // A geometry state has a prior fixed by the library, not by how many hits
     // this candidate happens to provide. Duplicate alignments within a state
@@ -315,7 +381,7 @@ fn joint(
     let mut states = BTreeMap::<usize, f64>::new();
     let mut strongest = 0.0f64;
     let mut bridge = 0.0f64;
-    let (left_end, right_start) = route.spanning_interval();
+    let mut primary_bridge = 0.0f64;
     for x in &a.hits {
         if x.reverse != pivot.1 || (x.start as isize).abs_diff(pivot.0) > pivot.2 {
             continue;
@@ -348,13 +414,21 @@ fn joint(
                     .filter(|m| m.geometry_usable)
                     .map_or(1.0, |m| weight / m.peak_probability());
             strongest = strongest.max(relative);
-            let crosses =
-                |h: &super::align::Hit| h.start + FLANK <= left_end && h.end >= right_start + FLANK;
-            let paired = model.is_some_and(|m| m.geometry_usable && span <= m.upper)
-                && x.start.min(y.start) + FLANK <= left_end
-                && x.end.max(y.end) >= right_start + FLANK;
-            if crosses(x) || crosses(y) || paired {
+            let crosses = |(left_end, right_start)| {
+                let single = |h: &super::align::Hit| {
+                    h.start + FLANK <= left_end && h.end >= right_start + FLANK
+                };
+                single(x)
+                    || single(y)
+                    || (model.is_some_and(|m| m.geometry_usable && span <= m.upper)
+                        && x.start.min(y.start) + FLANK <= left_end
+                        && x.end.max(y.end) >= right_start + FLANK)
+            };
+            if crosses(route.spanning_interval()) {
                 bridge = bridge.max(relative);
+            }
+            if crosses(route.primary_spanning_interval()) {
+                primary_bridge = primary_bridge.max(relative);
             }
         }
     }
@@ -370,6 +444,7 @@ fn joint(
     (
         (likelihood.min(1.0) + (-12.0f64).exp()).ln(),
         bridge >= 0.1 && bridge >= strongest * 0.99,
+        primary_bridge >= 0.1 && primary_bridge >= strongest * 0.99,
     )
 }
 
@@ -378,8 +453,7 @@ fn single(
     route: &Route,
     baseline: f64,
     pivot: (isize, bool, usize),
-) -> (f64, bool) {
-    let (left_end, right_start) = route.spanning_interval();
+) -> (f64, bool, bool) {
     let hits: Vec<_> = a
         .hits
         .iter()
@@ -389,12 +463,15 @@ fn single(
         .iter()
         .map(|h| h.logp)
         .fold(f64::NEG_INFINITY, f64::max);
-    let bridge = hits.iter().any(|h| {
-        h.logp >= best - 2.3 && h.start + FLANK <= left_end && h.end >= right_start + FLANK
-    });
+    let bridge = |(left_end, right_start)| {
+        hits.iter().any(|h| {
+            h.logp >= best - 2.3 && h.start + FLANK <= left_end && h.end >= right_start + FLANK
+        })
+    };
     (
         ((best - baseline).exp().min(1.0) + (-12.0f64).exp()).ln(),
-        bridge,
+        bridge(route.spanning_interval()),
+        bridge(route.primary_spanning_interval()),
     )
 }
 
@@ -406,7 +483,7 @@ fn score(
     baseline: f64,
     pivot: (isize, bool, usize),
     r1_only: bool,
-) -> (f64, bool) {
+) -> (f64, bool, bool) {
     if r1_only {
         single(a, route, baseline, pivot)
     } else {
@@ -540,7 +617,12 @@ fn path_anchors(graph: &PathGraph, k: usize, seeds: &seeds::Seeds) -> HashSet<us
             // the long internal-anchor cutoff. The reverse source is eligible
             // too; actual joins still require full-fragment spanning evidence.
             let terminal = graph.outgoing[id].is_empty() || !has_incoming[id];
-            let minimum_length = if terminal { k - 1 + FLANK } else { 4 * k };
+            let isolated = graph.outgoing[id].is_empty() && !has_incoming[id];
+            let minimum_length = if terminal && !isolated {
+                k - 1 + FLANK
+            } else {
+                4 * k
+            };
             if s.circular || s.sequence.len() < minimum_length {
                 return None;
             }
@@ -770,10 +852,12 @@ pub(super) fn resolve(
             for (i, &score) in relative.iter().enumerate() {
                 locus.totals[i] += score;
                 locus.spanning[i] += u32::from(scores[i].1);
+                locus.primary_spanning[i] += u32::from(scores[i].2);
                 for (j, &other) in relative.iter().enumerate() {
                     let delta = score - other;
                     locus.delta_squares[i][j] += delta * delta;
                     locus.strong_votes[i][j] += u32::from(delta >= 2.3 && scores[i].1);
+                    locus.primary_strong_votes[i][j] += u32::from(delta >= 2.3 && scores[i].2);
                 }
             }
         }
@@ -868,7 +952,7 @@ pub(super) fn resolve(
             ));
         }
     }
-    let reports: Vec<_> = loci.iter().enumerate().map(|(li,l)|json!({"source_segment":l.from+1,"candidate_independent_log_offset":l.offset,"score_definition":"sum of per-fragment log scores minus that fragment maximum over all paths","source_length":graph.segments[l.from].sequence.len(),"search_states":l.states,"search_exhausted":l.exhausted,"search_cuts":{"visited_states":l.state_limited,"candidate_paths":l.path_limited,"cycle_pre_expansion":l.cycle_expansion_limited,"pending_states":l.frontier_limited,"intermediate_length":l.length_limited},"peak_pending_states":l.frontier_peak,"frontier_limited":l.frontier_limited,"length_limited":l.length_limited,"repeat_copy_model":repeat_depth.report(l,graph,occurrence),"dead_end_walks":l.dead_ends,"fragments":l.fragments,"unplaced_pairs":l.unplaced,"r1_only_fragments":l.r1_only,"r2_only_fragments":l.r2_only,"r2_anchored_fragments":l.r2_anchored,"alignment_limited_pairs":l.alignment_limited,"unscored_maximum_total_contrast":unscored_contrast_bound(l.alignment_limited),"selected_path":l.selected.map(|i|i+1),"primary_path":primary_choices[li].map(|i|i+1),"paths":l.routes.iter().enumerate().map(|(i,r)|json!({"path":i+1,"target_segment":r.to+1,"target_length":graph.segments[r.to].sequence.len(),"intermediate_segments":r.nodes.iter().map(|id|id+1).collect::<Vec<_>>(),"connecting_bases":r.right_start-r.left_end,"spanning_interval":{"start_0based":r.spanning_interval().0,"end_0based_exclusive":r.spanning_interval().1,"basis":if r.snp_interval.is_some(){"single_snp_shared_flanks"}else{"graph_corridor"}},"score":l.totals[i],"spanning_fragments":l.spanning[i],"strong_votes_against_alternatives":l.strong_votes[i]})).collect::<Vec<_>>()})).collect();
+    let reports: Vec<_> = loci.iter().enumerate().map(|(li,l)|json!({"source_segment":l.from+1,"candidate_independent_log_offset":l.offset,"score_definition":"sum of per-fragment log scores minus that fragment maximum over all paths","source_length":graph.segments[l.from].sequence.len(),"search_states":l.states,"search_exhausted":l.exhausted,"search_cuts":{"visited_states":l.state_limited,"candidate_paths":l.path_limited,"cycle_pre_expansion":l.cycle_expansion_limited,"pending_states":l.frontier_limited,"intermediate_length":l.length_limited},"peak_pending_states":l.frontier_peak,"frontier_limited":l.frontier_limited,"length_limited":l.length_limited,"repeat_copy_model":repeat_depth.report(l,graph,occurrence),"dead_end_walks":l.dead_ends,"fragments":l.fragments,"unplaced_pairs":l.unplaced,"r1_only_fragments":l.r1_only,"r2_only_fragments":l.r2_only,"r2_anchored_fragments":l.r2_anchored,"alignment_limited_pairs":l.alignment_limited,"unscored_maximum_total_contrast":unscored_contrast_bound(l.alignment_limited),"selected_path":l.selected.map(|i|i+1),"primary_path":primary_choices[li].map(|i|i+1),"paths":l.routes.iter().enumerate().map(|(i,r)|json!({"path":i+1,"target_segment":r.to+1,"target_length":graph.segments[r.to].sequence.len(),"intermediate_segments":r.nodes.iter().map(|id|id+1).collect::<Vec<_>>(),"connecting_bases":r.right_start-r.left_end,"spanning_interval":{"start_0based":r.spanning_interval().0,"end_0based_exclusive":r.spanning_interval().1,"basis":if r.snp_interval.is_some(){"single_snp_shared_flanks"}else{"graph_corridor"}},"score":l.totals[i],"spanning_fragments":l.spanning[i],"strong_votes_against_alternatives":l.strong_votes[i],"primary_spanning_interval":{"start_0based":r.primary_spanning_interval().0,"end_0based_exclusive":r.primary_spanning_interval().1,"basis":if r.primary_interval.is_some(){"shared_flank_allele_partial_primary_only"}else if r.snp_interval.is_some(){"single_snp_shared_flanks"}else{"graph_corridor"}},"primary_spanning_fragments":l.primary_spanning[i],"primary_strong_votes_against_alternatives":l.primary_strong_votes[i]})).collect::<Vec<_>>()})).collect();
     Ok(Resolution {
         supported_cycles,
         primary_candidates,
@@ -876,7 +960,7 @@ pub(super) fn resolve(
             .into_iter()
             .map(|(sequence, circular)| Candidate { sequence, circular })
             .collect(),
-        report: json!({"method":"complete graph paths between sample-only anchors; full-query affine-gap alignment and one empirical paired-fragment score per name","fragment_model":training.report,"end_assembly":end_assembly,"complete_cycle_comparison":complete_cycles.report,"primary_selection":{"local_rule":"highest fragment score with spanning support and observed strong-vote majority; reciprocal graph views agree or retain a strict choice","minimum_spanning_fragments":settings.min_junction_fragments,"limited_alignments":"omitted from every candidate; reported as unknown, not counted as observed opposition for primary output","incomplete_path_search":"no relaxed join","cycle_rule":"one highest-scoring enumerated complete cycle with supported corridor boundaries; unresolved alleles and phase retained locally; strict final criteria unchanged"},"score_is_correctness_probability":false,"alignment":{"mode":"full-query affine-gap fitting; free target flanks, no query clipping","seed_length":17,"seed_start_margin":12,"maximum_seed_starts_per_strand":256,"gap_open_log_score":-8.0,"gap_extend_log_score":-2.0,"quality_error_floor":0.001,"outlier_log_floor":-12.0},"anchor_contexts":anchor_contexts,"anchor_seed_policy":"prefer 31; sample-unique 47/63 contexts rescue ambiguous short seeds without changing graph k or join evidence","fragment_pool":"identical names for all paths, recruited by unique source-anchor adaptive contexts on either mate; prefer R1 when both qualify, fixed anchor before alignment, no conditioning on the other mate placement; empirical weights are not renormalized over found hits","maximum_paths_per_anchor":MAX_PATHS,"maximum_search_states_per_anchor":MAX_STATES,"maximum_pending_states_per_anchor":MAX_STATES,"search_order":"increasing accumulated intermediate bases, then full node history and target ID; scheduling only, not a selection score","maximum_intermediate_bases":max_bases,"context_bases":context,"selection":{"minimum_score_margin":10.0,"minimum_margin_over_root_sum_squared_deltas":3.0,"strong_fragment_log_margin":2.3,"minimum_spanning_fragments":settings.min_junction_fragments,"max_strong_minor_major_ratio":settings.max_error_fraction},"scan":scan,"distinct_scored_fragment_names":names.len(),"anchor_count":anchors.len(),"short_terminal_anchor_count":short_terminal_anchors,"selected_connections":connections.len(),"loci":reports}),
+        report: json!({"method":"complete graph paths between sample-only anchors; full-query affine-gap alignment and one empirical paired-fragment score per name","fragment_model":training.report,"end_assembly":end_assembly,"complete_cycle_comparison":complete_cycles.report,"primary_selection":{"local_rule":"highest fragment score with spanning support and observed strong-vote majority; reciprocal views prefer a competitive comparison over a sole route, then strict over relaxed; equal conflicts stay open","allele_spanning":"same-endpoint shared-flank allele interval for partial primary only; strict join intervals unchanged","minimum_spanning_fragments":settings.min_junction_fragments,"limited_alignments":"omitted from every candidate; reported as unknown, not counted as observed opposition for primary output","incomplete_path_search":"no relaxed join","cycle_rule":"one highest-scoring enumerated complete cycle with supported corridor boundaries; unresolved alleles and phase retained locally; strict final criteria unchanged"},"score_is_correctness_probability":false,"alignment":{"mode":"full-query affine-gap fitting; free target flanks, no query clipping","seed_length":17,"seed_start_margin":12,"maximum_seed_starts_per_strand":256,"gap_open_log_score":-8.0,"gap_extend_log_score":-2.0,"quality_error_floor":0.001,"outlier_log_floor":-12.0},"anchor_contexts":anchor_contexts,"anchor_seed_policy":"prefer 31; sample-unique 47/63 contexts rescue ambiguous short seeds without changing graph k or join evidence","fragment_pool":"identical names for all paths, recruited by unique source-anchor adaptive contexts on either mate; prefer R1 when both qualify, fixed anchor before alignment, no conditioning on the other mate placement; empirical weights are not renormalized over found hits","maximum_paths_per_anchor":MAX_PATHS,"maximum_search_states_per_anchor":MAX_STATES,"maximum_pending_states_per_anchor":MAX_STATES,"search_order":"increasing accumulated intermediate bases, then full node history and target ID; scheduling only, not a selection score","maximum_intermediate_bases":max_bases,"context_bases":context,"selection":{"minimum_score_margin":10.0,"minimum_margin_over_root_sum_squared_deltas":3.0,"strong_fragment_log_margin":2.3,"minimum_spanning_fragments":settings.min_junction_fragments,"max_strong_minor_major_ratio":settings.max_error_fraction},"scan":scan,"distinct_scored_fragment_names":names.len(),"anchor_count":anchors.len(),"short_terminal_anchor_count":short_terminal_anchors,"selected_connections":connections.len(),"loci":reports}),
     })
 }
 
@@ -1158,6 +1242,7 @@ mod tests {
             left_end: 70,
             right_start: 131,
             snp_interval: None,
+            primary_interval: None,
         };
         let a = vec![b'A'; 220];
         let mut c = a.clone();
@@ -1201,6 +1286,7 @@ mod tests {
             left_end: 40,
             right_start: 60,
             snp_interval: None,
+            primary_interval: None,
         };
         let one = Placements {
             hits: vec![hit.clone()],
@@ -1240,5 +1326,108 @@ mod tests {
         assert!(large.exhausted && large.length_limited && large.cycle_expansion_limited);
         assert_eq!(large.routes.len(), MAX_PATHS);
         assert!(large.states <= MAX_PATHS + 1);
+    }
+    fn allele_routes() -> Vec<Route> {
+        [10, 13]
+            .into_iter()
+            .map(|n| Route {
+                circle_length: None,
+                to: 1,
+                nodes: vec![],
+                sequence: [vec![b'C'; 100], vec![b'T'; n], vec![b'G'; 150]].concat(),
+                left_end: 20,
+                right_start: 210 + n,
+                snp_interval: None,
+                primary_interval: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn primary_allele_spans_ambiguous_indel_positions_without_changing_strict_interval() {
+        let mut routes = allele_routes();
+        identify_primary_allele(0, &mut routes);
+        assert_eq!(routes[0].primary_spanning_interval(), (100, 110));
+        assert_eq!(routes[1].primary_spanning_interval(), (100, 113));
+        assert_eq!(routes[0].spanning_interval(), (20, 220));
+        assert_eq!(routes[1].spanning_interval(), (20, 223));
+        let mut reverse = allele_routes();
+        for r in &mut reverse {
+            let n = r.sequence.len();
+            r.sequence = kmer::reverse_complement(&r.sequence);
+            (r.left_end, r.right_start) = (n - r.right_start, n - r.left_end);
+        }
+        identify_primary_allele(0, &mut reverse);
+        for (f, r) in routes.iter().zip(&reverse) {
+            let (a, b) = f.primary_spanning_interval();
+            assert_eq!(
+                r.primary_spanning_interval(),
+                (f.sequence.len() - b, f.sequence.len() - a)
+            );
+        }
+    }
+
+    #[test]
+    fn local_allele_evidence_does_not_grant_a_strict_join_or_cross_a_different_exit() {
+        use super::super::align::Hit;
+        let mut routes = allele_routes();
+        identify_primary_allele(0, &mut routes);
+        let hit = Hit {
+            start: 80,
+            end: 145,
+            reverse: false,
+            logp: 0.0,
+            edits: 0,
+            traceback: None,
+        };
+        let placed = Placements {
+            hits: vec![hit],
+            exhausted: false,
+            complete: true,
+        };
+        for route in &routes {
+            let single_score = single(&placed, route, 0.0, (80, false, 3));
+            let joint_score = joint(&placed, &placed, route, None, 0.0, (80, false, 3));
+            assert!(!single_score.1 && single_score.2);
+            assert!(!joint_score.1 && joint_score.2);
+        }
+        for case in 0..5 {
+            let mut routes = allele_routes();
+            match case {
+                0 => routes[1].to = 2,
+                1 => routes.iter_mut().for_each(|r| r.to = 0),
+                2 => routes[1].circle_length = Some(260),
+                3 => routes[1].sequence = routes[0].sequence.clone(),
+                _ => routes.iter_mut().for_each(|r| r.left_end = 105),
+            }
+            identify_primary_allele(0, &mut routes);
+            assert!(
+                routes.iter().all(|r| r.primary_interval.is_none()),
+                "case={case}"
+            );
+        }
+    }
+
+    #[test]
+    fn separated_alleles_require_one_fragment_across_all_differences() {
+        let mut routes = allele_routes();
+        routes[1].sequence = routes[0].sequence.clone();
+        routes[1].sequence[100] = b'A';
+        routes[1].sequence[200] = b'A';
+        identify_primary_allele(0, &mut routes);
+        assert_eq!(routes[0].primary_spanning_interval(), (100, 201));
+        let placed = Placements {
+            hits: vec![super::super::align::Hit {
+                start: 80,
+                end: 145,
+                reverse: false,
+                logp: 0.0,
+                edits: 0,
+                traceback: None,
+            }],
+            exhausted: false,
+            complete: true,
+        };
+        assert!(!single(&placed, &routes[0], 0.0, (80, false, 3)).2);
     }
 }

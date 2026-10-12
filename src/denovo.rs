@@ -8,6 +8,7 @@ mod layout;
 pub(crate) mod multik;
 pub(crate) mod pairs;
 mod paths;
+mod shadows;
 pub(crate) mod shortlist;
 mod threading;
 use crate::{
@@ -309,13 +310,42 @@ fn stronger_bubble_path(
     None
 }
 
+/// A longer/shorter alternative with the same full graph flanks is retained
+/// structural evidence, unlike an arbitrary fragment detached during cleanup.
+/// Three bases is the existing conservative sequencing-error edit allowance.
+fn has_structural_alternative(
+    weak: &Unitig,
+    unitigs: &[Unitig],
+    starts: &HashMap<graph_kmer::Code, Vec<usize>>,
+    fraction: f64,
+) -> bool {
+    starts.get(&weak.from).into_iter().flatten().any(|&id| {
+        let strong = &unitigs[id];
+        !strong.circular
+            && strong.to == weak.to
+            && strong.sequence.len().abs_diff(weak.sequence.len()) > 3
+            && f64::from(weak.max_count) <= fraction * f64::from(strong.min_count)
+    })
+}
+
 /// Topology-aware error removal uses local competing support, never a genome length,
 /// reference, global coverage cutoff, or a choice of route through an unbridged repeat.
+#[cfg(test)]
 fn simplify(
     edges: &mut Vec<Edge>,
     k: usize,
     fraction: f64,
     bubble_fraction: f64,
+) -> (Vec<Unitig>, usize, Value, Vec<bubbles::Collapsed>) {
+    simplify_retaining_links(edges, k, fraction, bubble_fraction, &mut HashSet::new())
+}
+
+fn simplify_retaining_links(
+    edges: &mut Vec<Edge>,
+    k: usize,
+    fraction: f64,
+    bubble_fraction: f64,
+    retained_fragments: &mut HashSet<graph_kmer::Code>,
 ) -> (Vec<Unitig>, usize, Value, Vec<bubbles::Collapsed>) {
     let (mut unitigs, mut branches) = compact(edges, k);
     let (raw_kmers, raw_branches) = (edges.len() / 2, branches);
@@ -434,6 +464,13 @@ fn simplify(
                         ),
                     ] {
                         if f64::from(unitig.max_count) <= f64::from(competitor) * fraction {
+                            // Protect supported structural junction remnants,
+                            // not every error branch detached by this pass.
+                            if has_structural_alternative(unitig, &unitigs, &starts, fraction) {
+                                graph_kmer::visit(&unitig.sequence, None, k, 0, |_, code| {
+                                    retained_fragments.insert(graph_kmer::canonical(code, k));
+                                });
+                            }
                             graph_kmer::visit(window, None, k, 0, |_, code| {
                                 removed.insert(code);
                                 removed.insert(graph_kmer::reverse_code(code, k));
@@ -650,12 +687,30 @@ pub fn assemble(
         "building sample-only graph"
     );
     let (mut edges, _, _) = graph(&counts, settings.k, settings.min_kmer_count);
-    let (unitigs, branches, simplification, collapsed_bubbles) = simplify(
+    let mut retained_fragments = HashSet::new();
+    let (unitigs, branches, mut simplification, collapsed_bubbles) = simplify_retaining_links(
         &mut edges,
         settings.k,
         settings.max_error_fraction,
         settings.max_bubble_fraction,
+        &mut retained_fragments,
     );
+    let (unitigs, branches) = if settings.max_error_fraction > 0.0 {
+        let (unitigs, branches, report) = shadows::remove(
+            &mut edges,
+            unitigs,
+            settings.k,
+            settings.max_error_fraction,
+            &retained_fragments,
+        );
+        simplification["shadow_components"] = report;
+        (unitigs, branches)
+    } else {
+        simplification["shadow_components"] = Value::Null;
+        (unitigs, branches)
+    };
+    simplification["cleaned_canonical_kmers"] = json!(edges.len() / 2);
+    simplification["cleaned_directed_branch_nodes"] = json!(branches);
     info!(
         raw_branches = simplification["raw_directed_branch_nodes"].as_u64(),
         branches, "simplified sample-only graph"
@@ -996,5 +1051,25 @@ mod cleanup_tests {
         let (mut edges, _, _) = graph(&input, 63, 3);
         let (_, _, stats, _) = simplify(&mut edges, 63, 0.2, 0.49);
         assert_eq!(stats["bubble_kmers_removed"], 0);
+    }
+    #[test]
+    fn structural_link_protection_requires_distinct_lengths_and_shared_full_flanks() {
+        let major = dna(700);
+        for (deleted, expected) in [(0, false), (2, false), (100, true), (180, true)] {
+            let mut minor = [&major[..220], &major[220 + deleted..]].concat();
+            if deleted == 0 {
+                minor[220] = if minor[220] == b'A' { b'C' } else { b'A' };
+            }
+            let (_, unitigs, _) = graph(&counts(&[(&major, 100), (&minor, 10)], 63), 63, 3);
+            let mut starts = HashMap::<graph_kmer::Code, Vec<usize>>::new();
+            for (id, unitig) in unitigs.iter().enumerate() {
+                starts.entry(unitig.from).or_default().push(id);
+            }
+            let protected = unitigs
+                .iter()
+                .filter(|u| has_structural_alternative(u, &unitigs, &starts, 0.2))
+                .count();
+            assert_eq!(protected, if expected { 2 } else { 0 }, "deleted={deleted}");
+        }
     }
 }

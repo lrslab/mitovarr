@@ -98,17 +98,21 @@ fn choose(locus: &Locus, settings: &GraphSettings) -> Option<usize> {
     }
     let best = (0..locus.routes.len())
         .max_by(|&a, &b| locus.totals[a].total_cmp(&locus.totals[b]).then(b.cmp(&a)))?;
+    let (spanning, votes) = if locus.routes[best].primary_interval.is_some() {
+        (&locus.primary_spanning, &locus.primary_strong_votes)
+    } else {
+        (&locus.spanning, &locus.strong_votes)
+    };
     // Complete cycle families have their own shared-pool whole-path comparison.
-    if locus.routes[best].to == locus.from || locus.spanning[best] < settings.min_junction_fragments
-    {
+    if locus.routes[best].to == locus.from || spanning[best] < settings.min_junction_fragments {
         return None;
     }
     (0..locus.routes.len())
         .filter(|&i| i != best)
         .all(|i| {
             locus.totals[best] > locus.totals[i]
-                && locus.strong_votes[best][i] >= settings.min_junction_fragments
-                && locus.strong_votes[best][i] > locus.strong_votes[i][best]
+                && votes[best][i] >= settings.min_junction_fragments
+                && votes[best][i] > votes[i][best]
         })
         .then_some(best)
 }
@@ -121,8 +125,10 @@ fn route_key(graph: &PathGraph, locus: &Locus, route: &Route, overlap: usize) ->
     normalize(&sequence, false)
 }
 
-/// A physical join has one spelling in both graph orientations. A qualified
-/// strict choice takes precedence; conflicting relaxed views remain open.
+/// A physical join has one spelling in both graph orientations. A comparison
+/// with alternatives outranks a single-route observation. Among competitive
+/// comparisons a strict choice still takes precedence; equal conflicts stay
+/// open. These priorities affect partial primary output only.
 fn reciprocal_choices(
     graph: &PathGraph,
     loci: &[Locus],
@@ -144,6 +150,7 @@ fn reciprocal_choices(
         .map(|(l, r)| r.map(|i| route_key(graph, l, &l.routes[i], overlap)))
         .collect();
     let original = choices.to_vec();
+    let priority = |li: usize| (loci[li].routes.len() > 1, loci[li].selected == original[li]);
     for (li, key) in keys.iter().enumerate() {
         let Some(key) = key else {
             continue;
@@ -152,15 +159,46 @@ fn reciprocal_choices(
             continue;
         };
         if related.iter().any(|&(other, _)| {
-            keys[other].as_ref().is_some_and(|k| k != key)
-                && !(loci[li].selected == original[li] && loci[other].selected != original[other])
+            keys[other].as_ref().is_some_and(|k| k != key) && priority(li) <= priority(other)
         }) {
             choices[li] = None;
         }
     }
     let retained = choices.to_vec();
+    let mut projected = vec![BTreeSet::new(); loci.len()];
+    for (li, selected) in retained.iter().enumerate() {
+        if selected.is_some() {
+            if let Some(related) = views.get(keys[li].as_ref().unwrap()) {
+                for &(other, ri) in related {
+                    if !loci[other].exhausted && !loci[other].length_limited {
+                        projected[other].insert(ri);
+                    }
+                }
+            }
+        }
+    }
+    // Two reverse-only observations can project different routes into an
+    // undecided forward locus. Keep that conflict open in both orientations;
+    // iteration order must never select whichever projection is visited last.
+    let conflicted: BTreeSet<_> = retained
+        .iter()
+        .enumerate()
+        .filter(|(_, selected)| selected.is_some())
+        .filter_map(|(li, _)| {
+            let key = keys[li].as_ref()?;
+            views
+                .get(key)?
+                .iter()
+                .any(|&(other, _)| projected[other].len() > 1)
+                .then_some(key.clone())
+        })
+        .collect();
     for (li, selected) in retained.iter().enumerate() {
         if selected.is_none() {
+            continue;
+        }
+        if conflicted.contains(keys[li].as_ref().unwrap()) {
+            choices[li] = None;
             continue;
         }
         if let Some(related) = views.get(keys[li].as_ref().unwrap()) {
@@ -244,13 +282,14 @@ pub(super) fn local_candidates(
                     })
                     .min()
                     .unwrap();
-                if prefix + suffix < route.sequence.len()
-                    || locus.routes.iter().any(|r| r.sequence != route.sequence)
-                {
+                let (prefix, end) = route
+                    .primary_interval
+                    .unwrap_or((prefix, route.sequence.len() - suffix));
+                if prefix < end || locus.routes.iter().any(|r| r.sequence != route.sequence) {
                     let offset = sequence.len() - route.left_end - overlap;
                     regions.push(Region {
                         start: offset + prefix,
-                        end: offset + route.sequence.len() - suffix,
+                        end: offset + end,
                         evidence: format!("locus_{}", li + 1),
                         reason: if locus.selected == Some(ri) {
                             "minor_path_retained"
@@ -796,5 +835,70 @@ mod tests {
             final_candidate.sequence
         );
         std::fs::remove_dir_all(&out).unwrap();
+    }
+    fn reciprocal_fixture() -> (PathGraph, Vec<Locus>) {
+        use super::super::super::threading::Segment;
+        let forward = [b"AGGCA".to_vec(), b"ATCGA".to_vec(), b"AACCT".to_vec()];
+        let sequences = forward
+            .iter()
+            .cloned()
+            .chain(forward.iter().map(|s| kmer::reverse_complement(s)));
+        let graph = PathGraph {
+            segments: sequences
+                .map(|sequence| Segment {
+                    sequence,
+                    circular: false,
+                })
+                .collect(),
+            outgoing: vec![vec![1, 2], vec![], vec![], vec![], vec![3], vec![3]],
+        };
+        let anchors = HashSet::from([0, 1, 2, 3, 4, 5]);
+        let mut loci: Vec<_> = [0, 4, 5]
+            .into_iter()
+            .map(|from| enumerate(&graph, from, &anchors, 1, 100, 100, 100))
+            .collect();
+        loci[0].totals = vec![0.0, -100.0];
+        loci[0].spanning = vec![100, 3];
+        loci[0].strong_votes = vec![vec![0, 100], vec![3, 0]];
+        loci[1].spanning[0] = 100;
+        loci[1].selected = Some(0);
+        loci[2].spanning[0] = 3;
+        loci[2].selected = Some(0);
+        (graph, loci)
+    }
+
+    #[test]
+    fn reciprocal_competition_outranks_a_sole_route_without_changing_strict_choices() {
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let (graph, mut loci) = reciprocal_fixture();
+            let mut choices = vec![Some(0), Some(0), Some(0)];
+            // Permute the data, not only the visit order, to detect incidental
+            // ordering in reverse-view projection.
+            let mut data: Vec<_> = loci.drain(..).zip(choices.drain(..)).map(Some).collect();
+            let (loci, mut choices): (Vec<_>, Vec<_>) =
+                order.into_iter().map(|i| data[i].take().unwrap()).unzip();
+            reciprocal_choices(&graph, &loci, 1, &mut choices);
+            for (l, choice) in loci.iter().zip(choices) {
+                assert_eq!(choice, if l.from == 5 { None } else { Some(0) });
+                if l.from == 5 {
+                    assert_eq!(l.selected, Some(0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn conflicting_reverse_only_choices_stay_open_instead_of_last_projection_winning() {
+        let (graph, loci) = reciprocal_fixture();
+        let mut choices = vec![None, Some(0), Some(0)];
+        reciprocal_choices(&graph, &loci, 1, &mut choices);
+        assert_eq!(choices, vec![None, None, None]);
     }
 }

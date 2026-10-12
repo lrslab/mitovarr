@@ -192,6 +192,7 @@ fn interval_bridge(
         left_end: interval.0,
         right_start: interval.1,
         snp_interval: None,
+        primary_interval: None,
     };
     score(a, b, &interval, model, baseline, pivot, r1_only).1
 }
@@ -332,6 +333,7 @@ pub(super) fn resolve(
                     left_end: route.sequence.len() - route.right_start,
                     right_start: route.sequence.len() - route.left_end,
                     snp_interval: None,
+                    primary_interval: None,
                 }
             } else {
                 Route {
@@ -342,6 +344,7 @@ pub(super) fn resolve(
                     left_end: route.left_end,
                     right_start: route.right_start,
                     snp_interval: None,
+                    primary_interval: None,
                 }
             };
             let family = grouped.entry(canonical.clone()).or_default();
@@ -872,6 +875,7 @@ mod tests {
                         left_end: 100,
                         right_start: 500,
                         snp_interval: None,
+                        primary_interval: None,
                     },
                     circle: s,
                     views: vec![],
@@ -1092,6 +1096,7 @@ mod tests {
                         right_start: 150,
                         sequence: sequence.clone(),
                         snp_interval: None,
+                        primary_interval: None,
                     },
                     circle: sequence,
                     views: vec![],
@@ -1122,6 +1127,7 @@ mod tests {
                 right_start: 200,
                 sequence: local.clone(),
                 snp_interval: None,
+                primary_interval: None,
             },
             circle,
             views: vec![],

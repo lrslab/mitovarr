@@ -612,15 +612,25 @@ fn short_terminal_gene_tail_joins_only_with_spanning_fragments() {
 
 #[test]
 fn spanning_majority_keeps_a_primary_contig_across_a_real_minor_indel() {
-    let dir = Fixture(
-        std::env::temp_dir().join(format!("mitovar-primary-bubble-{}", std::process::id())),
-    );
+    primary_minor_indel(40, 300, false);
+}
+
+#[test]
+fn short_fragments_support_local_indels_in_a_primary_but_not_a_strict_corridor_join() {
+    primary_minor_indel(110, 180, true);
+}
+
+fn primary_minor_indel(core_length: usize, fragment_span: usize, local_only: bool) {
+    let dir = Fixture(std::env::temp_dir().join(format!(
+        "mitovar-primary-bubble-{core_length}-{}",
+        std::process::id()
+    )));
     fs::create_dir_all(&dir.0).unwrap();
     let left = dna(600, 717233);
     let right = dna(600, 113833);
-    let major = dna(40, 277311);
+    let major = dna(core_length, 277311);
     let mut minor = major.clone();
-    minor.splice(20..20, [b'A', b'C']);
+    minor.splice(core_length / 2..core_length / 2, [b'A', b'C']);
     let inner = |s: &[u8]| [left[538..].to_vec(), s.to_vec(), right[..62].to_vec()].concat();
     let forward = [left.clone(), inner(&major), inner(&minor), right.clone()];
     let graph = PathGraph {
@@ -668,14 +678,16 @@ fn spanning_majority_keeps_a_primary_contig_across_a_real_minor_indel() {
     let expected = [left.clone(), major.clone(), right.clone()].concat();
     for (allele, core, copies) in [(0, &major, 3), (1, &minor, 1)] {
         let genome = [left.clone(), core.clone(), right.clone()].concat();
-        for start in (0..=genome.len() - 300).step_by(3) {
+        for start in (0..=genome.len() - fragment_span).step_by(3) {
             for copy in 0..copies {
                 for (mate, writer, sequence) in [
                     (1, &mut r1, genome[start..start + 125].to_vec()),
                     (
                         2,
                         &mut r2,
-                        kmer::reverse_complement(&genome[start + 175..start + 300]),
+                        kmer::reverse_complement(
+                            &genome[start + fragment_span - 125..start + fragment_span],
+                        ),
                     ),
                 ] {
                     writeln!(
@@ -691,6 +703,23 @@ fn spanning_majority_keeps_a_primary_contig_across_a_real_minor_indel() {
     }
     drop((r1, r2));
     let result = resolve(&graph, &reads, &dir.0, &settings, &limits).unwrap();
+    if local_only {
+        let loci = result.report["loci"].as_array().unwrap();
+        for locus in loci
+            .iter()
+            .filter(|l| !l["paths"].as_array().unwrap().is_empty())
+        {
+            assert!(locus["selected_path"].is_null(), "{locus:#}");
+            for path in locus["paths"].as_array().unwrap() {
+                assert_eq!(path["spanning_fragments"], 0, "{path:#}");
+            }
+            assert!(locus["paths"].as_array().unwrap().iter().any(|p| p
+                ["primary_spanning_fragments"]
+                .as_u64()
+                .unwrap()
+                >= 3));
+        }
+    }
     let expected = normalize(&expected, false);
     assert!(
         !result.candidates.iter().any(|c| c.sequence == expected),
@@ -713,4 +742,34 @@ fn spanning_majority_keeps_a_primary_contig_across_a_real_minor_indel() {
         alternatives.lines().filter(|l| l.starts_with('>')).count(),
         4
     );
+}
+
+#[test]
+fn isolated_short_segments_are_not_anchors_but_short_sinks_and_long_islands_are() {
+    let sequences = [
+        dna(150, 19371),
+        dna(252, 21221),
+        dna(300, 33981),
+        dna(150, 12982),
+    ];
+    let mut graph = PathGraph {
+        segments: sequences
+            .iter()
+            .cloned()
+            .chain(sequences.iter().map(|s| kmer::reverse_complement(s)))
+            .map(|sequence| Segment {
+                sequence,
+                circular: false,
+            })
+            .collect(),
+        outgoing: vec![vec![]; 8],
+    };
+    graph.outgoing[2] = vec![3];
+    graph.outgoing[7] = vec![6];
+    let seeds = seeds::Seeds::new(&graph, 63);
+    let anchors = path_anchors(&graph, 63, &seeds);
+    assert!(!anchors.contains(&0) && !anchors.contains(&4));
+    for id in [1, 2, 3, 5, 6, 7] {
+        assert!(anchors.contains(&id), "segment {id}");
+    }
 }

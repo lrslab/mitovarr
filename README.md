@@ -325,3 +325,11 @@ Mapping choices use the explicit worst-case unknown-fragment score bound when
 filtering opposed paths. These remain inferred hypotheses, with unresolved
 structure and search tails reported. See the
 [shared-evidence limits](docs/paired_paths.md#shared-whole-layout-read-evidence).
+
+Disconnected low-support graph shadows are removed using retained sample k-mer
+support; isolated anchors require 4k bases. See [de novo cleanup](docs/de_novo.md)
+for the threshold, report fields and low-frequency-homolog limitation.
+
+Partial primary paths use shared-flank allele evidence and reciprocal candidate
+comparisons while retaining strict complete-publication checks. The additional
+report fields and uncertainty rules are documented in `docs/paired_paths.md`.

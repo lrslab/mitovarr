@@ -59,6 +59,11 @@ filter reads, reduce the placement domain, replace seedless rescue, or change
 scores, ties, limits or unknown states. The previous six-buffer implementation
 is retained as a test oracle; a separate edit-distance oracle checks rejection.
 
+An isolated segment with neither incoming nor outgoing links must be at least
+4k bases long to become a path anchor. A genuine terminal source or sink attached
+to another segment retains the shorter `(k−1) + 20`-base threshold and the same
+sample-unique seed requirement. End-connection search uses the same anchor rule.
+
 ## Primary path output
 
 The default run now also writes `primary.fasta`, a single usable representative of the main sample component. This is separate from the strict `consensus.fasta` qualification. An unresolved minor allele or missing phase link no longer has to break the primary backbone.
@@ -292,3 +297,23 @@ fragments, the maximum change in a pairwise score contrast is
 units plus this bound of the best measured score. With no measured fragments,
 all shortlisted choices remain hypotheses. This bound cannot account for
 ungenerated structures, model misspecification or missing biological information.
+
+### Partial-primary allele support and reciprocal choices
+
+Partial primary paths additionally record `primary_spanning_interval`,
+`primary_spanning_fragments` and `primary_strong_votes_against_alternatives`.
+When every noncircular route joins the same source and target, the interval
+covers all sequence differences within shared flanks. Overlapping common
+prefix/suffix sequence expands the interval across every equivalent indel
+position, including the entire ambiguous homopolymer. Multiple differences
+must be covered by one fragment. Other exits, anchor differences and incomplete
+searches do not gain a join from this rule. The original spanning interval,
+strict scores, strict selected paths and complete-publication checks are unchanged.
+Skipped scoring reports the additional evidence counts as null.
+
+For partial primary output, a comparison of alternatives takes precedence over
+an opposite view containing only one route. Among competitive comparisons,
+strict selection still takes precedence over an observed majority. Equal
+conflicts remain open. Conflicting reverse-only projections also remain open
+instead of choosing the last visited route. All strict selections remain
+unchanged, and an uncertain primary join is reported as structural uncertainty.

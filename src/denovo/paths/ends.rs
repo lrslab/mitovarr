@@ -627,7 +627,7 @@ mod tests {
         let mut seed = 783411u64;
         let mut sequences = Vec::new();
         for _ in 0..51 {
-            let sequence: Vec<_> = (0..100)
+            let sequence: Vec<_> = (0..252)
                 .map(|_| {
                     seed ^= seed << 13;
                     seed ^= seed >> 7;

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Recover supported partial primary paths across local alleles and competing
+  reciprocal views. Report partial-primary allele evidence separately, retain
+  unresolved conflicts, and preserve strict join/publication criteria.
+
+- Remove weak disconnected graph shadows using strand-symmetric sample support;
+  require 4k bases for isolated path anchors while preserving attached terminal
+  anchors. Report shadow removal and post-cleanup graph counts without changing
+  default base quality, input scope or complete-publication gates.
+
 - Reduce seeded alignment and mate-rescue work with in-place affine score rows,
   cached per-quality emissions and a lossless disjoint-block rejection check.
   Reuse per-fragment k-mer sets and use one count lookup in main/end graph builds.

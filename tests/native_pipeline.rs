@@ -730,6 +730,7 @@ fn local_graph_cleanup_recovers_noisy_circle_but_retains_balanced_alleles() {
         &["--max-error-fraction", "0"]
     ));
     assert!(!dir.path("raw/consensus.fasta").exists());
+    assert!(report(&dir, "raw")["graph_simplification"]["shadow_components"].is_null());
     let unsimplified = load_reference(&dir.path("raw/primary.fasta"), None).unwrap();
     assert!(equivalent_circle(&genome, &unsimplified.sequence));
     assert!(report(&dir, "raw")["paired_path_resolution"]["loci"]
