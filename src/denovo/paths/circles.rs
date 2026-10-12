@@ -39,6 +39,12 @@ struct Family {
     selected: Option<usize>,
 }
 
+impl Family {
+    fn can_score(&self) -> bool {
+        self.complete && self.ordered && self.represented && !self.blocks.is_empty()
+    }
+}
+
 pub(super) struct Resolved {
     pub report: Value,
     pub primaries: Vec<primary::Primary>,
@@ -446,7 +452,7 @@ pub(super) fn resolve(
         .collect();
     crate::io::fasta::write_fasta_records(&out.join("complete_path_candidates.fasta"), &records)?;
     let mut lookup = HashMap::<_, Vec<(usize, usize)>>::new();
-    for (fi, f) in families.iter().enumerate() {
+    for (fi, f) in families.iter().enumerate().filter(|(_, f)| f.can_score()) {
         for (si, s) in f.seeds.iter().enumerate() {
             lookup
                 .entry(kmer::canonical(s[0].1, 31))
@@ -455,7 +461,7 @@ pub(super) fn resolve(
         }
     }
     let mut names = HashSet::new();
-    if !families.is_empty() {
+    if !lookup.is_empty() {
         fastq::scan_pairs(&reads.r1, &reads.r2, |_, a, b| {
             let mut relevant = BTreeMap::<usize, [Vec<(usize, usize, kmer::Code)>; 2]>::new();
             for (mate, read) in [a, b].into_iter().enumerate() {
@@ -794,6 +800,44 @@ pub(super) fn resolve(
             });
         }
         reports.push(json!({"family":fi+1,"search_complete":f.complete,"common_anchor_order_consistent":f.ordered,"all_candidate_differences_represented_by_blocks":f.represented,"shared_unique_31mers":f.seeds.len(),"variable_blocks":f.blocks.len(),"fragments":f.fragments,"r1_only_fragments":f.r1_only,"r2_only_fragments":f.r2_only,"r2_anchored_fragments":f.r2_anchored,"candidate_independent_log_offset":f.offset,"score_definition":"sum of fragment log scores minus each fragment maximum over every candidate","omitted_alignment_or_pivot_limit":f.omitted,"unscored_maximum_total_contrast":unscored_contrast_bound(f.omitted),"distinct_r1_start_clusters":f.clusters.keys().filter(|s|s.0==0).count(),"distinct_anchor_start_clusters":f.clusters.len(),"selected_path":f.selected.map(|i|i+1),"best_path":best+1,"primary_path":primary_path.map(|i|i+1),"runner_up_path":runner_up+1,"runner_up_score_margin":f.totals[best]-f.totals[runner_up],"inference_status":if f.selected.is_some(){"dominant_consensus_with_observed_adjacent_phase"}else if !f.complete{"search_incomplete"}else{"mixed_or_unphased"},"unique_biological_haplotype_claim":false,"score_margin_passed":margin,"block_phase_and_boundary_support_passed":connected,"competing_exit_comparison_passed":exits,"paths":f.hypotheses.iter().enumerate().map(|(i,h)|json!({"path":i+1,"length":h.circle.len(),"alignment_origin_in_oriented_fasta":f.origins[i].0,"alignment_reverse_complement":f.origins[i].1,"score":f.totals[i],"source_views":h.views.iter().map(|&(li,ri)|json!({"locus":li+1,"path":ri+1})).collect::<Vec<_>>(),"boundary_start_clusters":f.boundaries[i].iter().map(BTreeSet::len).collect::<Vec<_>>(),"block_start_clusters":f.block_support[i].iter().map(BTreeSet::len).collect::<Vec<_>>(),"adjacent_block_phase_start_clusters":f.phases[i].iter().map(BTreeSet::len).collect::<Vec<_>>(),"block_alleles":f.blocks.iter().map(|b|b.alleles[i]).collect::<Vec<_>>(),"block_intervals":f.blocks.iter().map(|b|b.intervals[i]).collect::<Vec<_>>(),"strong_votes_against_alternatives":f.strong[i]})).collect::<Vec<_>>()}));
+        let report = reports.last_mut().expect("family report");
+        report["read_scoring"] = json!(if f.can_score() {
+            "computed"
+        } else {
+            "skipped_search_incomplete"
+        });
+        if !f.can_score() {
+            for field in [
+                "fragments",
+                "r1_only_fragments",
+                "r2_only_fragments",
+                "r2_anchored_fragments",
+                "candidate_independent_log_offset",
+                "omitted_alignment_or_pivot_limit",
+                "unscored_maximum_total_contrast",
+                "distinct_r1_start_clusters",
+                "distinct_anchor_start_clusters",
+                "best_path",
+                "runner_up_path",
+                "runner_up_score_margin",
+                "score_margin_passed",
+                "block_phase_and_boundary_support_passed",
+                "competing_exit_comparison_passed",
+            ] {
+                report[field] = Value::Null;
+            }
+            for path in report["paths"].as_array_mut().expect("family paths") {
+                for field in [
+                    "score",
+                    "boundary_start_clusters",
+                    "block_start_clusters",
+                    "adjacent_block_phase_start_clusters",
+                    "strong_votes_against_alternatives",
+                ] {
+                    path[field] = Value::Null;
+                }
+            }
+        }
     }
     Ok(Resolved {
         primaries,

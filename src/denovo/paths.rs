@@ -695,7 +695,7 @@ pub(super) fn resolve(
     for (id, locus) in loci
         .iter()
         .enumerate()
-        .filter(|(_, l)| !l.routes.is_empty())
+        .filter(|(_, l)| !l.routes.is_empty() && !l.exhausted && !l.length_limited)
     {
         let sequence = &graph.segments[locus.from].sequence;
         let recruit = training
@@ -952,7 +952,56 @@ pub(super) fn resolve(
             ));
         }
     }
-    let reports: Vec<_> = loci.iter().enumerate().map(|(li,l)|json!({"source_segment":l.from+1,"candidate_independent_log_offset":l.offset,"score_definition":"sum of per-fragment log scores minus that fragment maximum over all paths","source_length":graph.segments[l.from].sequence.len(),"search_states":l.states,"search_exhausted":l.exhausted,"search_cuts":{"visited_states":l.state_limited,"candidate_paths":l.path_limited,"cycle_pre_expansion":l.cycle_expansion_limited,"pending_states":l.frontier_limited,"intermediate_length":l.length_limited},"peak_pending_states":l.frontier_peak,"frontier_limited":l.frontier_limited,"length_limited":l.length_limited,"repeat_copy_model":repeat_depth.report(l,graph,occurrence),"dead_end_walks":l.dead_ends,"fragments":l.fragments,"unplaced_pairs":l.unplaced,"r1_only_fragments":l.r1_only,"r2_only_fragments":l.r2_only,"r2_anchored_fragments":l.r2_anchored,"alignment_limited_pairs":l.alignment_limited,"unscored_maximum_total_contrast":unscored_contrast_bound(l.alignment_limited),"selected_path":l.selected.map(|i|i+1),"primary_path":primary_choices[li].map(|i|i+1),"paths":l.routes.iter().enumerate().map(|(i,r)|json!({"path":i+1,"target_segment":r.to+1,"target_length":graph.segments[r.to].sequence.len(),"intermediate_segments":r.nodes.iter().map(|id|id+1).collect::<Vec<_>>(),"connecting_bases":r.right_start-r.left_end,"spanning_interval":{"start_0based":r.spanning_interval().0,"end_0based_exclusive":r.spanning_interval().1,"basis":if r.snp_interval.is_some(){"single_snp_shared_flanks"}else{"graph_corridor"}},"score":l.totals[i],"spanning_fragments":l.spanning[i],"strong_votes_against_alternatives":l.strong_votes[i],"primary_spanning_interval":{"start_0based":r.primary_spanning_interval().0,"end_0based_exclusive":r.primary_spanning_interval().1,"basis":if r.primary_interval.is_some(){"shared_flank_allele_partial_primary_only"}else if r.snp_interval.is_some(){"single_snp_shared_flanks"}else{"graph_corridor"}},"primary_spanning_fragments":l.primary_spanning[i],"primary_strong_votes_against_alternatives":l.primary_strong_votes[i]})).collect::<Vec<_>>()})).collect();
+    let mut reports: Vec<_> = loci.iter().enumerate().map(|(li,l)|json!({"source_segment":l.from+1,"candidate_independent_log_offset":l.offset,"score_definition":"sum of per-fragment log scores minus that fragment maximum over all paths","source_length":graph.segments[l.from].sequence.len(),"search_states":l.states,"search_exhausted":l.exhausted,"search_cuts":{"visited_states":l.state_limited,"candidate_paths":l.path_limited,"cycle_pre_expansion":l.cycle_expansion_limited,"pending_states":l.frontier_limited,"intermediate_length":l.length_limited},"peak_pending_states":l.frontier_peak,"frontier_limited":l.frontier_limited,"length_limited":l.length_limited,"repeat_copy_model":repeat_depth.report(l,graph,occurrence),"dead_end_walks":l.dead_ends,"fragments":l.fragments,"unplaced_pairs":l.unplaced,"r1_only_fragments":l.r1_only,"r2_only_fragments":l.r2_only,"r2_anchored_fragments":l.r2_anchored,"alignment_limited_pairs":l.alignment_limited,"unscored_maximum_total_contrast":unscored_contrast_bound(l.alignment_limited),"selected_path":l.selected.map(|i|i+1),"primary_path":primary_choices[li].map(|i|i+1),"paths":l.routes.iter().enumerate().map(|(i,r)|json!({"path":i+1,"target_segment":r.to+1,"target_length":graph.segments[r.to].sequence.len(),"intermediate_segments":r.nodes.iter().map(|id|id+1).collect::<Vec<_>>(),"connecting_bases":r.right_start-r.left_end,"spanning_interval":{"start_0based":r.spanning_interval().0,"end_0based_exclusive":r.spanning_interval().1,"basis":if r.snp_interval.is_some(){"single_snp_shared_flanks"}else{"graph_corridor"}},"score":l.totals[i],"spanning_fragments":l.spanning[i],"strong_votes_against_alternatives":l.strong_votes[i],"primary_spanning_interval":{"start_0based":r.primary_spanning_interval().0,"end_0based_exclusive":r.primary_spanning_interval().1,"basis":if r.primary_interval.is_some(){"shared_flank_allele_partial_primary_only"}else if r.snp_interval.is_some(){"single_snp_shared_flanks"}else{"graph_corridor"}},"primary_spanning_fragments":l.primary_spanning[i],"primary_strong_votes_against_alternatives":l.primary_strong_votes[i]})).collect::<Vec<_>>()})).collect();
+    for (locus, report) in loci.iter().zip(&mut reports) {
+        let scored = !locus.exhausted && !locus.length_limited && !locus.routes.is_empty();
+        report["read_scoring"] = json!(if scored {
+            "computed"
+        } else if locus.exhausted || locus.length_limited {
+            "skipped_search_incomplete"
+        } else {
+            "skipped_no_candidates"
+        });
+        if !scored {
+            for field in [
+                "candidate_independent_log_offset",
+                "fragments",
+                "unplaced_pairs",
+                "r1_only_fragments",
+                "r2_only_fragments",
+                "r2_anchored_fragments",
+                "alignment_limited_pairs",
+                "unscored_maximum_total_contrast",
+            ] {
+                report[field] = Value::Null;
+            }
+            for path in report["paths"].as_array_mut().expect("path reports") {
+                for field in [
+                    "score",
+                    "spanning_fragments",
+                    "strong_votes_against_alternatives",
+                    "primary_spanning_fragments",
+                    "primary_strong_votes_against_alternatives",
+                ] {
+                    path[field] = Value::Null;
+                }
+            }
+            if let Some(cycles) = report["repeat_copy_model"]
+                .get_mut("simple_cycles")
+                .and_then(Value::as_array_mut)
+            {
+                for cycle in cycles {
+                    for candidate in cycle["candidates"]
+                        .as_array_mut()
+                        .expect("repeat candidates")
+                    {
+                        candidate["fragment_score"] = Value::Null;
+                        candidate["spanning_fragments"] = Value::Null;
+                    }
+                }
+            }
+        }
+    }
     Ok(Resolution {
         supported_cycles,
         primary_candidates,

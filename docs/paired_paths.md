@@ -298,6 +298,17 @@ units plus this bound of the best measured score. With no measured fragments,
 all shortlisted choices remain hypotheses. This bound cannot account for
 ungenerated structures, model misspecification or missing biological information.
 
+Read scoring skips exhausted or length-limited loci, and cycle families lacking
+complete enumeration, consistent order, complete block representation or any
+variable blocks. Those candidates remain exported. `read_scoring` is
+`skipped_search_incomplete`; unmeasured scores, fragment/support counts and
+score-derived rankings are null, including fragment scores and spanning counts
+inside `repeat_copy_model.simple_cycles[].candidates`. Measured R1 occurrence
+depths remain available. A locus without candidates uses
+`skipped_no_candidates`. Eligible comparisons use `computed` and retain the
+same read pool and scoring. The cycle read scan is omitted when its index is
+empty; repeat-depth diagnostics continue to scan all input pairs.
+
 ### Partial-primary allele support and reciprocal choices
 
 Partial primary paths additionally record `primary_spanning_interval`,

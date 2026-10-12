@@ -6,6 +6,10 @@
   reciprocal views. Report partial-primary allele evidence separately, retain
   unresolved conflicts, and preserve strict join/publication criteria.
 
+- Skip read scoring for paths/cycle families that cannot be selected; retain
+  candidate exports and report unmeasured evidence as null with `read_scoring`,
+  including fragment scores nested in repeat-copy diagnostics.
+
 - Remove weak disconnected graph shadows using strand-symmetric sample support;
   require 4k bases for isolated path anchors while preserving attached terminal
   anchors. Report shadow removal and post-cleanup graph counts without changing

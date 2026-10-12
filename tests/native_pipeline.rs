@@ -244,6 +244,39 @@ fn coverage_layout_is_explicit_reproducible_and_cannot_publish_an_unbridged_repe
         result["coverage_layout"]["status"],
         "coverage_inferred_layout"
     );
+    let incomplete = result["paired_path_resolution"]["loci"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|l| l["search_exhausted"] == true || l["length_limited"] == true)
+        .collect::<Vec<_>>();
+    assert!(!incomplete.is_empty());
+    let mut repeat_candidates = 0;
+    for locus in incomplete {
+        assert_eq!(locus["read_scoring"], "skipped_search_incomplete");
+        assert!(locus["fragments"].is_null());
+        assert!(locus["candidate_independent_log_offset"].is_null());
+        assert!(locus["selected_path"].is_null() && locus["primary_path"].is_null());
+        assert!(locus["paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["score"].is_null()
+                && p["spanning_fragments"].is_null()
+                && p["strong_votes_against_alternatives"].is_null()));
+        if let Some(cycles) = locus["repeat_copy_model"]["simple_cycles"].as_array() {
+            for cycle in cycles {
+                for candidate in cycle["candidates"].as_array().unwrap() {
+                    repeat_candidates += 1;
+                    assert!(candidate["fragment_score"].is_null());
+                    assert!(candidate["spanning_fragments"].is_null());
+                    assert!(candidate["observed_r1_occurrences"].is_number());
+                    assert!(candidate["expected_r1_occurrences_at_flank_depth"].is_number());
+                }
+            }
+        }
+    }
+    assert!(repeat_candidates > 0);
     assert_eq!(result["coverage_layout"]["final_verified"], false);
     assert_eq!(
         result["coverage_layout"]["structural_uniqueness_claim"],
