@@ -618,8 +618,9 @@ pub fn assemble(
         "assembly thresholds and limits must be positive"
     );
     let mut counts = HashMap::<graph_kmer::Code, u32>::new();
+    let mut fragment = HashSet::new();
     let scan = fastq::scan_pairs(&reads.r1, &reads.r2, |_, a, b| {
-        let mut fragment = HashSet::new();
+        fragment.clear();
         for read in [a, b] {
             graph_kmer::visit(
                 &read.sequence,
@@ -631,12 +632,14 @@ pub fn assemble(
                 },
             );
         }
-        for code in fragment {
-            ensure!(
-                counts.contains_key(&code) || counts.len() < limits.max_kmers,
-                "assembly exceeds --max-kmers; no final assembly published"
-            );
-            let count = counts.entry(code).or_default();
+        for &code in &fragment {
+            let count = if counts.len() < limits.max_kmers {
+                counts.entry(code).or_default()
+            } else {
+                counts.get_mut(&code).ok_or_else(|| {
+                    anyhow::anyhow!("assembly exceeds --max-kmers; no final assembly published")
+                })?
+            };
             *count = count.saturating_add(1);
         }
         Ok(())
@@ -751,7 +754,8 @@ pub fn assemble(
     } else {
         (Value::Null, false)
     };
-    let complete = read_validated && selected_bubbles.is_empty();
+    let end_search_limited = path_resolution.report["end_assembly"]["status"] == "resource_limited";
+    let complete = read_validated && selected_bubbles.is_empty() && !end_search_limited;
     if let Some(object) = validation.as_object_mut() {
         object.insert(
             "unresolved_collapsed_bubbles".into(),
@@ -780,6 +784,8 @@ pub fn assemble(
     };
     let reason = if complete {
         "supported_dominant_circle"
+    } else if end_search_limited {
+        "end_search_resource_limit"
     } else if !selected_bubbles.is_empty() {
         "supported_bubble_alternatives"
     } else if selected.is_some() {

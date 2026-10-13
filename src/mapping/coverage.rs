@@ -183,7 +183,13 @@ pub(super) fn infer(
                 main
             } else {
                 if let std::collections::hash_map::Entry::Vacant(entry) = smaller.entry(k) {
-                    entry.insert(Graph::build(reads, k, args.min_baseq, args.max_records)?);
+                    entry.insert(Graph::build(
+                        reads,
+                        k,
+                        args.min_baseq,
+                        args.max_records,
+                        args.local_max_kmers,
+                    )?);
                 }
                 &smaller[&k]
             };
@@ -846,7 +852,7 @@ mod tests {
         let (start, end) = (969, 1511);
         let (left, right) = (&baseline[start..start + 31], &baseline[end - 31..end]);
         for k in [31, 15] {
-            let graph = Graph::build(&reads, k, 0, 10000).unwrap();
+            let graph = Graph::build(&reads, k, 0, 10000, 2_000_000).unwrap();
             let depth = Depth::new(&graph, &baseline, start, end).unwrap();
             let (paths, report) = graph.coverage_paths(left, right, 1000, 32, 3, &depth);
             assert!(paths.iter().any(|(p, _)| p == &sample[start..end]));

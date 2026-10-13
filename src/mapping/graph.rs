@@ -1,5 +1,5 @@
 use crate::{cli::Reads, io::fastq, kmer};
-use anyhow::{ensure, Result};
+use anyhow::Result;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 mod guided;
@@ -7,6 +7,26 @@ mod legacy;
 mod maximum;
 
 type Code = kmer::Code;
+
+#[derive(Debug)]
+pub(super) struct ResourceLimit {
+    pub resource: &'static str,
+    pub observed: usize,
+    pub limit: usize,
+    pub k: usize,
+}
+
+impl std::fmt::Display for ResourceLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "local graph resource limit: {} observed={} limit={} k={}",
+            self.resource, self.observed, self.limit, self.k
+        )
+    }
+}
+impl std::error::Error for ResourceLimit {}
+
 pub(super) struct Graph {
     pub k: usize,
     pub counts: HashMap<Code, u32>,
@@ -27,7 +47,13 @@ pub(super) fn code(sequence: &[u8]) -> Option<Code> {
 }
 
 impl Graph {
-    pub fn build(reads: &Reads, k: usize, minq: u8, max_pairs: usize) -> Result<Self> {
+    pub fn build(
+        reads: &Reads,
+        k: usize,
+        minq: u8,
+        max_pairs: usize,
+        max_kmers: usize,
+    ) -> Result<Self> {
         let mut counts = HashMap::<Code, u32>::new();
         let mut r1_occurrences = HashMap::<Code, u64>::new();
         let mut names = HashSet::new();
@@ -36,10 +62,15 @@ impl Graph {
             if !names.insert(a.name(1)?.to_owned()) {
                 return Ok(());
             }
-            ensure!(
-                names.len() <= max_pairs,
-                "local assembly exceeds --max-records named FASTQ pairs"
-            );
+            if names.len() > max_pairs {
+                return Err(ResourceLimit {
+                    resource: "named_fastq_pairs",
+                    observed: names.len(),
+                    limit: max_pairs,
+                    k,
+                }
+                .into());
+            }
             // Keep repeated R1 windows, not just presence within a fragment.
             // R2 is excluded from copy-depth estimation to avoid mate overlap.
             kmer::visit(&a.sequence, Some(&a.quality), k, minq, |_, c| {
@@ -53,10 +84,15 @@ impl Graph {
                 });
             }
             for c in observed {
-                ensure!(
-                    counts.len() < 2_000_000 || counts.contains_key(&c),
-                    "local graph exceeds 2,000,000 distinct kmers"
-                );
+                if counts.len() >= max_kmers && !counts.contains_key(&c) {
+                    return Err(ResourceLimit {
+                        resource: "distinct_kmers",
+                        observed: counts.len() + 1,
+                        limit: max_kmers,
+                        k,
+                    }
+                    .into());
+                }
                 *counts.entry(c).or_default() += 1;
             }
             Ok(())
@@ -297,12 +333,12 @@ mod tests {
                     }
                 }
             }
-            let main = Graph::build(&reads, 31, 20, 10000).unwrap();
+            let main = Graph::build(&reads, 31, 20, 10000, 2_000_000).unwrap();
             assert!(main.support(left) >= 10 && main.support(right) >= 10);
             let initial = main.paths(left, right, 300, 128, 10);
             assert!(initial.paths.is_empty() && initial.limits.is_empty());
             for k in [21, 15] {
-                let small = Graph::build(&reads, k, 20, 10000).unwrap();
+                let small = Graph::build(&reads, k, 20, 10000, 2_000_000).unwrap();
                 assert!(sequence.windows(k).all(|s| small.support(s) >= 10));
                 let result = small.anchored_paths(left, right, 2000, 128, 10);
                 assert!(
@@ -363,11 +399,11 @@ mod tests {
                 }
             }
         }
-        let main = Graph::build(&reads, 31, 20, 10000).unwrap();
+        let main = Graph::build(&reads, 31, 20, 10000, 2_000_000).unwrap();
         let left = &sequence[..31];
         let right = &sequence[149..];
         assert!(main.paths(left, right, 300, 128, 3).paths.is_empty());
-        let small = Graph::build(&reads, 21, 20, 10000).unwrap();
+        let small = Graph::build(&reads, 21, 20, 10000, 2_000_000).unwrap();
         let result = small.anchored_paths(left, right, 300, 128, 3);
         assert!(result.limits.is_empty());
         assert_eq!(result.paths.len(), 1);
@@ -426,7 +462,7 @@ mod tests {
                     }
                 }
             }
-            let graph = Graph::build(&reads, 15, 20, 10000).unwrap();
+            let graph = Graph::build(&reads, 15, 20, 10000, 2_000_000).unwrap();
             let paths = graph.paths(&sequence[..15], &sequence[75..], 200, 128, 3);
             assert!(paths.limits.is_empty());
             let actual: BTreeSet<_> = paths.paths.into_iter().map(|p| p.0).collect();

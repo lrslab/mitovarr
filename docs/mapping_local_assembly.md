@@ -131,7 +131,11 @@ The length is a reference-guided prior, not a copy-number measurement.
 In deep mode, pool these fills with the legacy sample-edge beam proposals and ordinary
 local candidates. Prefer a full fill preserving called bases and span, then
 paths meeting the ordinary depth threshold, longer graph k and support.
-Otherwise use the legacy preference for the nearest reference interval length.
+The maximum consensus applies a patch only if its length exactly matches the
+backbone interval and every called A/C/G/T is preserved. If no patch qualifies,
+retain the backbone, including its N calls. Nearest-reference-length proposals
+remain available only in the separate diagnostic legacy FASTAs.
+`maximum_consensus_rejected_patches` records rejected loci and span changes.
 Do not change a window that already has no N just to add repeat copies.
 Existing strict replacements outside these windows are retained.
 
@@ -201,9 +205,20 @@ Defaults: `--local-k 31`, `--local-max-span 2000`, `--local-max-paths 128`,
 `--deep-validation` off, `--scoring-threads 4` (used only in deep mode, capped by available CPUs). Fragment scoring retains all
 reads and reduces results in input order; `--scoring-threads 1` is serial.
 `--max-records` also bounds unique FASTQ pair names in this mode. The sample graph
-has a 2,000,000-kmer cap; each local search has a 200,000-state and four-visits-per-
-node cap. A reached search cap leaves the region unresolved. Increasing a cap
+has a configurable `--local-max-kmers` cap (default 2,000,000); each local search
+has a 200,000-state and four-visits-per-node cap. A reached search cap leaves the region unresolved. Increasing a cap
 does not add sequencing evidence.
+
+If a local graph exceeds its distinct-kmer or named-FASTQ-pair cap after the BAM
+pileup is complete, discard the incomplete graph and retain that full-BAM
+`candidate.fasta`, base votes and requested coverage/variant reports. Fast mode
+or explicit `--best-effort` also writes that baseline as the maximum consensus
+and `consensus.fasta`. The local report records `status=resource_limited`, the
+observed value and limit, `fastq_scan_complete=false`, and null uncomputed graph
+and fragment counts. Structural uncertainty covers the retained sequence and
+strict validation remains false. This does not subsample or imply validation
+against all FASTQ. Malformed input and I/O errors still fail; a BAM record cap
+before pileup completion cannot use this partial-output fallback.
 
 ### Optional high-depth subsampling
 
@@ -219,7 +234,7 @@ complete FASTQ pair can support pileup but cannot contribute local pair
 evidence. The report's `subsampling` object records input/retained counts, seed
 and evidence scope. Coverage and variant fractions describe the retained data;
 rare alleles or weak structural support can be lost. No support threshold is
-relaxed. Without `--subsample`, exceeding the record cap remains an error.
+relaxed. Without `--subsample`, exceeding the BAM record cap remains an error.
 
 ## Discovery and sequence generation
 

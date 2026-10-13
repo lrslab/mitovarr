@@ -20,6 +20,118 @@ fn dna(n: usize, mut seed: u64) -> Vec<u8> {
 }
 
 #[test]
+fn duplicated_short_contexts_do_not_hide_long_anchors_or_supply_missing_bridges() {
+    let dir =
+        Fixture(std::env::temp_dir().join(format!("mitovarr-long-anchor-{}", std::process::id())));
+    fs::create_dir_all(&dir.0).unwrap();
+    let expected = dna(938, 4227719);
+    for short_length in [46, 62] {
+        let forward = [expected[..500].to_vec(), expected[438..].to_vec()];
+        let mut sequences = forward.to_vec();
+        // Each long segment's 31-mers also occur in short graph fragments.
+        // With 62-base fragments, even 47-mer uniqueness disappears.
+        for sequence in &forward {
+            for start in 0..=sequence.len() - short_length {
+                sequences.push(sequence[start..start + short_length].to_vec());
+            }
+        }
+        let n = sequences.len();
+        let mut graph = PathGraph {
+            segments: sequences
+                .iter()
+                .cloned()
+                .chain(sequences.iter().map(|s| kmer::reverse_complement(s)))
+                .map(|sequence| Segment {
+                    sequence,
+                    circular: false,
+                })
+                .collect(),
+            outgoing: vec![vec![]; 2 * n],
+        };
+        graph.outgoing[0] = vec![1];
+        graph.outgoing[n + 1] = vec![n];
+        let seeds = seeds::Seeds::new(&graph, 63);
+        assert_eq!(
+            seeds.anchor_length(&forward[0], 63),
+            Some(if short_length == 46 { 47 } else { 63 })
+        );
+        assert_eq!(path_anchors(&graph, 63, &seeds).len(), 4);
+        // A second full copy remains ambiguous even at the longer context.
+        let mut repeated = graph.clone();
+        repeated
+            .segments
+            .extend([graph.segments[0].clone(), graph.segments[n].clone()]);
+        repeated.outgoing.extend([vec![], vec![]]);
+        assert_eq!(
+            seeds::Seeds::new(&repeated, 63).anchor_length(&forward[0], 63),
+            None
+        );
+
+        for covered in [true, false] {
+            let out = dir.0.join(format!("{short_length}-{covered}"));
+            fs::create_dir(&out).unwrap();
+            let reads = Reads {
+                r1: out.join("r1.fq"),
+                r2: out.join("r2.fq"),
+            };
+            let mut r1 = fs::File::create(&reads.r1).unwrap();
+            let mut r2 = fs::File::create(&reads.r2).unwrap();
+            for start in (0..expected.len() - 230).step_by(5) {
+                if !covered && start < 530 && start + 230 > 400 {
+                    continue;
+                }
+                for copy in 0..3 {
+                    for (mate, writer, seq) in [
+                        (1, &mut r1, expected[start..start + 150].to_vec()),
+                        (
+                            2,
+                            &mut r2,
+                            kmer::reverse_complement(&expected[start + 80..start + 230]),
+                        ),
+                    ] {
+                        writeln!(
+                            writer,
+                            "@anchor_{start}_{copy}/{mate}\n{}\n+\n{}",
+                            String::from_utf8_lossy(&seq),
+                            "I".repeat(150)
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+            drop(r1);
+            drop(r2);
+            let settings = GraphSettings {
+                coverage_layout: false,
+                multi_k_layout: false,
+                k: 63,
+                min_kmer_count: 3,
+                max_error_fraction: 0.2,
+                max_bubble_fraction: 0.49,
+                min_depth: 10,
+                min_junction_fragments: 3,
+                max_validation_pairs: 1000,
+            };
+            let limits = Limits {
+                max_kmers: 100_000,
+                min_baseq: 0,
+            };
+            let result = resolve(&graph, &reads, &out, &settings, &limits).unwrap();
+            assert_eq!(
+                result
+                    .primary_candidates
+                    .iter()
+                    .any(|p| p.candidate.sequence == normalize(&expected, false)),
+                covered,
+                "short_length={short_length}, covered={covered}: {}",
+                result.report
+            );
+            assert!(result.supported_cycles.is_empty());
+        }
+    }
+}
+
+#[test]
 fn short_reads_resolve_a_single_snp_without_a_fragment_distance_model() {
     let dir =
         Fixture(std::env::temp_dir().join(format!("mitovar-short-snp-{}", std::process::id())));

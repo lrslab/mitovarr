@@ -127,6 +127,88 @@ pub(crate) fn assemble(
     signals: Signals,
     contig: &str,
 ) -> Result<ResultAssembly> {
+    match assemble_inner(args, called, ambiguity, signals, contig) {
+        Ok(result) => Ok(result),
+        Err(error) => match error.downcast_ref::<graph::ResourceLimit>() {
+            Some(limit) => resource_limited(args, called, ambiguity, contig, limit),
+            None => Err(error),
+        },
+    }
+}
+
+/// A completed BAM pileup remains useful when optional FASTQ graph work hits
+/// a cap. Never use the truncated graph, or turn malformed input/I/O into success.
+fn resource_limited(
+    args: &MappingArgs,
+    called: &ConsensusResult,
+    ambiguity: &[AmbiguityInterval],
+    contig: &str,
+    limit: &graph::ResourceLimit,
+) -> Result<ResultAssembly> {
+    tracing::warn!(%limit, "retaining full-BAM partial consensus; local validation incomplete");
+    let resource = json!({"resource":limit.resource,"observed":limit.observed,"limit":limit.limit,"k":limit.k});
+    let windows = vec![
+        json!({"status":"unresolved","reason":"local_resource_limit",
+        "output_segments":segments(0,called.sequence.len(),called.sequence.len()),
+        "common_fragments":null,"unscored_fragments":null,"selected_candidate":null,
+        "search":{"status":"resource_limited","complete":false}}),
+    ];
+    let mut uncertainty = BufWriter::new(File::create(args.out.join("structural_ambiguity.tsv"))?);
+    writeln!(
+        uncertainty,
+        "sequence\tstart\tend\tevidence\treason\talternatives"
+    )?;
+    writeln!(
+        uncertainty,
+        "{contig}\t1\t{}\tlocal_assembly\tlocal_resource_limit\t0",
+        called.sequence.len()
+    )?;
+    uncertainty.flush()?;
+    let maximum_sequence = if args.best_effort {
+        write_consensus_fasta(
+            &args.out.join("maximum_consensus.fasta"),
+            contig,
+            &called.sequence,
+        )?;
+        fs::copy(
+            args.out.join("structural_ambiguity.tsv"),
+            args.out.join("maximum_consensus.ambiguity.tsv"),
+        )?;
+        Some(called.sequence.clone())
+    } else {
+        None
+    };
+    let report = json!({"schema":"mitovar-rust.mapping-local.v1","workflow":"reference_guided_local_assembly",
+        "status":"resource_limited","validation_mode":if args.deep_validation{"deep_validation"}else{"fast_consensus"},
+        "resource_limit":resource,"action":"retain completed BAM pileup; discard incomplete local graph and replacements",
+        "r1":args.r1,"r2":args.r2,"read_scope":"provided complete pairs; local FASTQ scan incomplete; no subsampling",
+        "named_pairs":null,"sample_kmers":null,"fastq_scan_complete":false,
+        "ambiguity_alternatives_count":"retained proposals only; zero does not mean no unsearched alternatives",
+        "fragment_model":{"status":"not_available_resource_limit"},"windows":windows,
+        "applied_replacements":0,"all_windows_resolved":false,"remaining_repeat_intervals":ambiguity.len(),
+        "internal_rotation_baseline_offset":0,"output_origin_shifted_to_supported_anchor":false,
+        "coordinate_system":"candidate and maximum consensus match reference_candidate.fasta; pileup TSVs remain reference-based",
+        "sequence_source":"completed BAM pileup; no incomplete FASTQ graph or reference fill",
+        "legacy_bridge":{"enabled":args.best_effort,"status":"not_available_resource_limit","final_verified":false},
+        "coverage_layout":{"enabled":args.coverage_layout,"status":"not_available_resource_limit"},
+        "parameters":{"k":args.local_k,"max_kmers":args.local_max_kmers}});
+    crate::write_json(&args.out.join("local_assembly/report.json"), &report)?;
+    Ok(ResultAssembly {
+        sequence: called.sequence.clone(),
+        maximum_sequence,
+        resolved: false,
+        unresolved_ambiguity: ambiguity.len(),
+        report,
+    })
+}
+
+fn assemble_inner(
+    args: &MappingArgs,
+    called: &ConsensusResult,
+    ambiguity: &[AmbiguityInterval],
+    signals: Signals,
+    contig: &str,
+) -> Result<ResultAssembly> {
     ensure!(
         !args.coverage_layout || args.deep_validation,
         "coverage layouts require --deep-validation"
@@ -134,8 +216,9 @@ pub(crate) fn assemble(
     ensure!(
         (15..=31).contains(&args.local_k)
             && args.local_max_span > 2 * args.local_k
-            && args.local_max_paths > 1,
-        "local k must be 15..31, local span > 2*k and local path limit > 1"
+            && args.local_max_paths > 1
+            && args.local_max_kmers > 0,
+        "local k must be 15..31, local span > 2*k, local path limit > 1 and local kmer limit > 0"
     );
     ensure!(
         !called.sequence.is_empty(),
@@ -161,7 +244,13 @@ pub(crate) fn assemble(
     let (mask, reasons) = signals.windows(called, ambiguity);
     let (cut, intervals) = discovery::rotate_windows(&mask);
     let backbone = rotate(&called.sequence, cut);
-    let graph = Graph::build(&reads, args.local_k, args.min_baseq, args.max_records)?;
+    let graph = Graph::build(
+        &reads,
+        args.local_k,
+        args.min_baseq,
+        args.max_records,
+        args.local_max_kmers,
+    )?;
     let settings = GraphSettings {
         coverage_layout: false,
         multi_k_layout: false,
@@ -174,7 +263,7 @@ pub(crate) fn assemble(
         max_validation_pairs: args.max_records,
     };
     let limits = Limits {
-        max_kmers: 2_000_000,
+        max_kmers: args.local_max_kmers,
         min_baseq: args.min_baseq,
     };
     let mut training_sequence = backbone.clone();
@@ -266,7 +355,13 @@ pub(crate) fn assemble(
         if args.deep_validation && search.paths.is_empty() && search.limits.is_empty() {
             for k in [21, 15].into_iter().filter(|&k| k < graph.k) {
                 if let std::collections::hash_map::Entry::Vacant(entry) = fallback_graphs.entry(k) {
-                    entry.insert(Graph::build(&reads, k, args.min_baseq, args.max_records)?);
+                    entry.insert(Graph::build(
+                        &reads,
+                        k,
+                        args.min_baseq,
+                        args.max_records,
+                        args.local_max_kmers,
+                    )?);
                 }
                 let fallback = &fallback_graphs[&k];
                 let mut extra = fallback.anchored_paths(
@@ -648,7 +743,7 @@ pub(crate) fn assemble(
         "validation_mode":if args.deep_validation{"deep_validation"}else{"fast_consensus"},
         "r1":reads.r1.canonicalize()?,"r2":reads.r2.canonicalize()?,"read_scope":"provided complete pairs; may be mt-bam-extracted, not assumed whole-sample",
         "discovery_signals":reasons,"named_pairs":graph.pairs,"sample_kmers":graph.counts.len(),"weak_graph_edges_removed":graph.weak_edges_removed,"fragment_model":training.report,
-        "parameters":{"k":graph.k,"minimum_kmer_fragments":3,"minimum_path_kmer_fragments":args.min_depth,"minimum_junction_fragments":3,"breakpoint_cluster_width":7,"minimum_breakpoint_depth_fraction":0.05,"weak_edge_filter":"support < 0.02 of strongest outgoing edge, independent of absolute depth","max_span":args.local_max_span,"max_paths":args.local_max_paths,"max_states":200000,"max_visits_per_node":4,"max_kmers":2000000,"fallback_k":[21,15],"fallback_rule":"only when main graph has no path and no search limit; retain full main-k flanks; pool and jointly score proposals"},
+        "parameters":{"k":graph.k,"minimum_kmer_fragments":3,"minimum_path_kmer_fragments":args.min_depth,"minimum_junction_fragments":3,"breakpoint_cluster_width":7,"minimum_breakpoint_depth_fraction":0.05,"weak_edge_filter":"support < 0.02 of strongest outgoing edge, independent of absolute depth","max_span":args.local_max_span,"max_paths":args.local_max_paths,"max_states":200000,"max_visits_per_node":4,"max_kmers":args.local_max_kmers,"fallback_k":[21,15],"fallback_rule":"only when main graph has no path and no search limit; retain full main-k flanks; pool and jointly score proposals"},
         "windows":reports,"applied_replacements":patches.len(),"all_windows_resolved":resolved,"remaining_repeat_intervals":unresolved_ambiguity,"coverage_layout":coverage_layout,"legacy_bridge":legacy_bridge,
         "internal_rotation_baseline_offset":cut,"output_origin_shifted_to_supported_anchor":shifted_origin,
         "coordinate_system":"one-based inclusive; baseline_segments refer to reference_candidate.fasta; output_segments refer to candidate.fasta; pileup TSVs remain reference-based",

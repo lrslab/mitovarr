@@ -27,6 +27,14 @@ including proposals withheld after an incomplete search. Only reciprocal,
 eligible connections enter `end_bridge_candidates.fasta` and the path graph;
 a saved proposal is not a validated join or a complete circular assembly.
 
+Path anchors prefer unique 31-mer contexts and use longer sample-only contexts
+when short graph fragments obscure uniqueness. Join evidence is unchanged.
+Mapping maximum consensus fills only N at the existing span; hypotheses that
+change called bases remain separate. Optional local graph/endpoint resource
+limits retain usable partial outputs and explicitly defer structural validation.
+See [mapping limits](docs/mapping_local_assembly.md) and
+[paired-path anchors](docs/paired_paths.md).
+
 [Workflow Figure 1](docs/figures/README.md) · [Documentation](docs/README.md) · [CLI reference](docs/cli.md)
 
 ## Package overview

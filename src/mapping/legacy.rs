@@ -70,7 +70,13 @@ pub(super) fn fill(
     let mut searches = Vec::new();
     for k in KS.into_iter().filter(|&k| k <= args.local_k) {
         if let std::collections::hash_map::Entry::Vacant(entry) = graphs.entry(k) {
-            entry.insert(Graph::build(reads, k, args.min_baseq, args.max_records)?);
+            entry.insert(Graph::build(
+                reads,
+                k,
+                args.min_baseq,
+                args.max_records,
+                args.local_max_kmers,
+            )?);
         }
         let (filled, search) = graphs[&k].fill_masked_span(baseline, 2);
         searches.push(search);
@@ -193,7 +199,13 @@ pub(super) fn infer(
     let mut searches = Vec::new();
     for k in KS.into_iter().filter(|&k| k <= main.k) {
         if let std::collections::hash_map::Entry::Vacant(entry) = graphs.entry(k) {
-            entry.insert(Graph::build(reads, k, args.min_baseq, args.max_records)?);
+            entry.insert(Graph::build(
+                reads,
+                k,
+                args.min_baseq,
+                args.max_records,
+                args.local_max_kmers,
+            )?);
         }
         let (filled, fill_report) = graphs[&k].fill_masked_span(&backbone[start..end], 2);
         searches.push(fill_report);
@@ -363,8 +375,8 @@ pub(super) fn infer(
         report: json!({"status":"inferred_bridge","reference_guided":true,"target_length":target_len,
             "target_source":"reference interval between sample flanks; length is a proposal heuristic",
             "candidate_count":pool.len(),"candidates_file":file,"length_preferred_rank":1,
-            "maximum_consensus_rank":if backbone[start..end].contains(&b'N'){Some(1)}else{None},
-            "maximum_consensus_selection":"fill N while preserving called bases and span; supported longer k then support; otherwise nearest reference span; read score does not veto output",
+            "maximum_consensus_rank":if backbone[start..end].contains(&b'N') && preserves_calls(&pool[order[0]].sequence,&backbone[start..end]){Some(1)}else{None},
+            "maximum_consensus_selection":"fill N only at the existing span and preserve every called base; otherwise retain the backbone; other hypotheses remain diagnostic",
             "read_preferred_rank":preferred_rank,"read_preference_scope":"unique measured best within shortlist; unknown fragments and unsearched paths remain unresolved",
             "shortlist":shortlist.report,"ranked_candidates":ranking,"paired_comparison":evaluation,
             "searches":searches,"search_complete":false,"final_verified":false,
@@ -390,7 +402,10 @@ pub(super) fn write_hypotheses(
     let mut maximum_sequence = Vec::new();
     let maximum: Vec<_> = length
         .iter()
-        .filter(|p| backbone[p.start..p.end].contains(&b'N'))
+        .filter(|p| {
+            backbone[p.start..p.end].contains(&b'N')
+                && preserves_calls(&p.sequence, &backbone[p.start..p.end])
+        })
         .cloned()
         .collect();
     for (label, proposed) in [
@@ -467,8 +482,98 @@ pub(super) fn write_hypotheses(
     let report = json!({"enabled":true,"status":if maximum.is_empty(){"no_inferred_windows"}else{"best_effort_consensus"},
         "k_values":KS,"outputs":outputs,"final_verified":false,"search_complete":false,
         "maximum_consensus":"maximum_consensus.fasta","consensus_mode":"best_effort",
+        "maximum_consensus_rejected_patches":length.iter().filter(|p|backbone[p.start..p.end].contains(&b'N') && !preserves_calls(&p.sequence,&backbone[p.start..p.end])).map(|p|json!({"locus":p.locus,"reason":"would_change_called_bases_or_span","baseline_length":p.end-p.start,"proposed_length":p.sequence.len()})).collect::<Vec<_>>(),
         "internal_rotation_baseline_offset":cut,"coordinate_system":"FASTA and ambiguity TSV share the internal local-assembly rotation; not reference coordinates",
         "cross_window_phase_verified":false,"strict_sequence_changed_by_legacy_bridge":false});
     crate::write_json(&args.out.join("legacy_bridge.json"), &report)?;
     Ok((report, maximum_sequence))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::{Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn maximum_output_rejects_called_base_changes_and_length_changes() {
+        let root =
+            std::env::temp_dir().join(format!("mitovarr-protected-maximum-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let backbone = b"GGACNNTGCC";
+        for (i, proposed) in [b"ATCCTG".as_slice(), b"ACCTG", b"ACCCCTG", b"ACCCTG"]
+            .into_iter()
+            .enumerate()
+        {
+            let out = root.join(i.to_string());
+            std::fs::create_dir(&out).unwrap();
+            let cli = Cli::parse_from([
+                "mitovarr",
+                "assemble-mapping",
+                "--ref",
+                "unused",
+                "--bam",
+                "unused",
+                "--out",
+                out.to_str().unwrap(),
+                "--local-assembly",
+                "--r1",
+                "unused",
+                "--r2",
+                "unused",
+                "--deep-validation",
+                "--best-effort",
+            ]);
+            let Commands::AssembleMapping(args) = cli.command else {
+                unreachable!()
+            };
+            let patch = Patch {
+                start: 2,
+                end: 8,
+                locus: 1,
+                sequence: proposed.to_vec(),
+            };
+            let (report, maximum) = write_hypotheses(
+                &args,
+                backbone,
+                0,
+                "MtDNA",
+                false,
+                &[],
+                &[patch],
+                &[],
+                &[(2, 8)],
+                &[json!({"status":"unresolved","legacy_bridge":{"candidate_count":1}})],
+            )
+            .unwrap();
+            let expected = if i == 3 {
+                b"GGACCCTGCC".as_slice()
+            } else {
+                backbone
+            };
+            assert_eq!(maximum, expected);
+            assert_eq!(
+                crate::io::fasta::load_reference(&out.join("maximum_consensus.fasta"), None)
+                    .unwrap()
+                    .sequence,
+                expected
+            );
+            assert_eq!(
+                report["maximum_consensus_rejected_patches"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                usize::from(i != 3)
+            );
+            assert_eq!(report["outputs"][0]["final_verified"], false);
+            // Alternative structures stay explicitly diagnostic and available.
+            assert_eq!(
+                crate::io::fasta::load_reference(&out.join("legacy_bridge.fasta"), None)
+                    .unwrap()
+                    .sequence,
+                [b"GG".as_slice(), proposed, b"CC"].concat()
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

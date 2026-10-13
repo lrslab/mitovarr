@@ -23,6 +23,7 @@ mod circles;
 mod ends;
 pub(super) mod primary;
 mod repeats;
+mod seeds;
 #[cfg(test)]
 mod terminal_tests;
 
@@ -522,11 +523,7 @@ pub(super) struct Resolution {
     pub report: Value,
 }
 
-fn path_anchors(
-    graph: &PathGraph,
-    k: usize,
-    occurrence: &HashMap<kmer::Code, usize>,
-) -> HashSet<usize> {
+fn path_anchors(graph: &PathGraph, k: usize, seeds: &seeds::Seeds) -> HashSet<usize> {
     let mut has_incoming = vec![false; graph.segments.len()];
     for targets in &graph.outgoing {
         for &target in targets {
@@ -547,11 +544,7 @@ fn path_anchors(
             if s.circular || s.sequence.len() < minimum_length {
                 return None;
             }
-            let mut unique = 0;
-            kmer::visit(&s.sequence, None, 31, 0, |_, code| {
-                unique += usize::from(occurrence[&kmer::canonical(code, 31)] == 2)
-            });
-            (unique >= k).then_some(id)
+            seeds.anchor_length(&s.sequence, k).map(|_| id)
         })
         .collect()
 }
@@ -578,15 +571,9 @@ pub(super) fn resolve(
     let original_segments = graph.segments.len();
     let (graph, end_assembly) = ends::augment(graph, reads, out, settings, limits, max_bases)?;
     let graph = &graph;
-    // Opposite strands are present twice. A uniquely occurring canonical 31-mer
-    // therefore has count two, unlike a repeated segment or duplicated route copy.
-    let mut occurrence: HashMap<_, usize> = HashMap::new();
-    for segment in &graph.segments {
-        kmer::visit(&segment.sequence, None, 31, 0, |_, code| {
-            *occurrence.entry(kmer::canonical(code, 31)).or_default() += 1
-        });
-    }
-    let mut anchors = path_anchors(graph, settings.k, &occurrence);
+    let seeds = seeds::Seeds::new(graph, settings.k.clamp(31, 63));
+    let occurrence = seeds.occurrences(31);
+    let mut anchors = path_anchors(graph, settings.k, &seeds);
     // Newly proposed connectors are alternatives between existing anchors,
     // never new independent anchors that could certify their own joins.
     anchors.retain(|&id| id < original_segments);
@@ -621,7 +608,8 @@ pub(super) fn resolve(
     crate::io::fasta::write_fasta_records(&out.join("path_candidates.fasta"), &records)?;
     // Recruit a COMMON fragment pool from each source anchor's terminal region.
     // The pool is independent of which alternative is currently being scored.
-    let mut lookup: HashMap<_, Vec<(usize, isize, kmer::Code)>> = HashMap::new();
+    let mut lookup = BTreeMap::<usize, HashMap<_, Vec<(usize, isize, kmer::Code)>>>::new();
+    let mut anchor_contexts = Vec::new();
     for (id, locus) in loci
         .iter()
         .enumerate()
@@ -635,17 +623,20 @@ pub(super) fn resolve(
             .max(settings.k);
         let start = sequence.len().saturating_sub(recruit);
         let context_start = sequence.len().saturating_sub(context);
-        kmer::visit(&sequence[start..], None, 31, 0, |offset, code| {
-            let canonical = kmer::canonical(code, 31);
-            if occurrence[&canonical] != 2 {
-                return;
+        let recruitment = seeds.recruitment(&sequence[start..], settings.k);
+        anchor_contexts.push(json!({"source_segment":locus.from+1,
+            "anchor_seed_bases":seeds.anchor_length(sequence,settings.k),
+            "recruitment_seeds":recruitment.iter().map(|(k,p)|json!({"k":k,"unique_positions":p.len()})).collect::<Vec<_>>()}));
+        for (k, positions) in recruitment {
+            let index = lookup.entry(k).or_default();
+            for (offset, code) in positions {
+                index.entry(kmer::canonical(code, k)).or_default().push((
+                    id,
+                    (start + offset - context_start) as isize,
+                    code,
+                ));
             }
-            lookup.entry(canonical).or_default().push((
-                id,
-                (start + offset - context_start) as isize,
-                code,
-            ));
-        });
+        }
     }
     let mut names = HashSet::new();
     let mut repeat_depth = repeats::Depth::new(&loci, graph);
@@ -656,26 +647,28 @@ pub(super) fn resolve(
         // The other mate need not map, so inclusion cannot favour a repeat length.
         let mut relevant = BTreeMap::<usize, [BTreeSet<(isize, bool)>; 2]>::new();
         for (mate, read) in [a, b].into_iter().enumerate() {
-            kmer::visit(
-                &read.sequence,
-                Some(&read.quality),
-                31,
-                limits.min_baseq.min(10),
-                |offset, code| {
-                    if let Some(anchors) = lookup.get(&kmer::canonical(code, 31)) {
-                        for &(id, position, forward) in anchors {
-                            let reverse = code != forward;
-                            let offset = if reverse {
-                                read.sequence.len() - 31 - offset
-                            } else {
-                                offset
-                            };
-                            relevant.entry(id).or_default()[mate]
-                                .insert((position - offset as isize, reverse));
+            for (&seed_k, index) in &lookup {
+                kmer::visit(
+                    &read.sequence,
+                    Some(&read.quality),
+                    seed_k,
+                    limits.min_baseq.min(10),
+                    |offset, code| {
+                        if let Some(anchors) = index.get(&kmer::canonical(code, seed_k)) {
+                            for &(id, position, forward) in anchors {
+                                let reverse = code != forward;
+                                let offset = if reverse {
+                                    read.sequence.len() - seed_k - offset
+                                } else {
+                                    offset
+                                };
+                                relevant.entry(id).or_default()[mate]
+                                    .insert((position - offset as isize, reverse));
+                            }
                         }
-                    }
-                },
-            );
+                    },
+                );
+            }
         }
         if relevant.is_empty() {
             return Ok(());
@@ -875,7 +868,7 @@ pub(super) fn resolve(
             ));
         }
     }
-    let reports: Vec<_> = loci.iter().enumerate().map(|(li,l)|json!({"source_segment":l.from+1,"candidate_independent_log_offset":l.offset,"score_definition":"sum of per-fragment log scores minus that fragment maximum over all paths","source_length":graph.segments[l.from].sequence.len(),"search_states":l.states,"search_exhausted":l.exhausted,"search_cuts":{"visited_states":l.state_limited,"candidate_paths":l.path_limited,"cycle_pre_expansion":l.cycle_expansion_limited,"pending_states":l.frontier_limited,"intermediate_length":l.length_limited},"peak_pending_states":l.frontier_peak,"frontier_limited":l.frontier_limited,"length_limited":l.length_limited,"repeat_copy_model":repeat_depth.report(l,graph,&occurrence),"dead_end_walks":l.dead_ends,"fragments":l.fragments,"unplaced_pairs":l.unplaced,"r1_only_fragments":l.r1_only,"r2_only_fragments":l.r2_only,"r2_anchored_fragments":l.r2_anchored,"alignment_limited_pairs":l.alignment_limited,"unscored_maximum_total_contrast":unscored_contrast_bound(l.alignment_limited),"selected_path":l.selected.map(|i|i+1),"primary_path":primary_choices[li].map(|i|i+1),"paths":l.routes.iter().enumerate().map(|(i,r)|json!({"path":i+1,"target_segment":r.to+1,"target_length":graph.segments[r.to].sequence.len(),"intermediate_segments":r.nodes.iter().map(|id|id+1).collect::<Vec<_>>(),"connecting_bases":r.right_start-r.left_end,"spanning_interval":{"start_0based":r.spanning_interval().0,"end_0based_exclusive":r.spanning_interval().1,"basis":if r.snp_interval.is_some(){"single_snp_shared_flanks"}else{"graph_corridor"}},"score":l.totals[i],"spanning_fragments":l.spanning[i],"strong_votes_against_alternatives":l.strong_votes[i]})).collect::<Vec<_>>()})).collect();
+    let reports: Vec<_> = loci.iter().enumerate().map(|(li,l)|json!({"source_segment":l.from+1,"candidate_independent_log_offset":l.offset,"score_definition":"sum of per-fragment log scores minus that fragment maximum over all paths","source_length":graph.segments[l.from].sequence.len(),"search_states":l.states,"search_exhausted":l.exhausted,"search_cuts":{"visited_states":l.state_limited,"candidate_paths":l.path_limited,"cycle_pre_expansion":l.cycle_expansion_limited,"pending_states":l.frontier_limited,"intermediate_length":l.length_limited},"peak_pending_states":l.frontier_peak,"frontier_limited":l.frontier_limited,"length_limited":l.length_limited,"repeat_copy_model":repeat_depth.report(l,graph,occurrence),"dead_end_walks":l.dead_ends,"fragments":l.fragments,"unplaced_pairs":l.unplaced,"r1_only_fragments":l.r1_only,"r2_only_fragments":l.r2_only,"r2_anchored_fragments":l.r2_anchored,"alignment_limited_pairs":l.alignment_limited,"unscored_maximum_total_contrast":unscored_contrast_bound(l.alignment_limited),"selected_path":l.selected.map(|i|i+1),"primary_path":primary_choices[li].map(|i|i+1),"paths":l.routes.iter().enumerate().map(|(i,r)|json!({"path":i+1,"target_segment":r.to+1,"target_length":graph.segments[r.to].sequence.len(),"intermediate_segments":r.nodes.iter().map(|id|id+1).collect::<Vec<_>>(),"connecting_bases":r.right_start-r.left_end,"spanning_interval":{"start_0based":r.spanning_interval().0,"end_0based_exclusive":r.spanning_interval().1,"basis":if r.snp_interval.is_some(){"single_snp_shared_flanks"}else{"graph_corridor"}},"score":l.totals[i],"spanning_fragments":l.spanning[i],"strong_votes_against_alternatives":l.strong_votes[i]})).collect::<Vec<_>>()})).collect();
     Ok(Resolution {
         supported_cycles,
         primary_candidates,
@@ -883,7 +876,7 @@ pub(super) fn resolve(
             .into_iter()
             .map(|(sequence, circular)| Candidate { sequence, circular })
             .collect(),
-        report: json!({"method":"complete graph paths between sample-only anchors; full-query affine-gap alignment and one empirical paired-fragment score per name","fragment_model":training.report,"end_assembly":end_assembly,"complete_cycle_comparison":complete_cycles.report,"primary_selection":{"local_rule":"highest fragment score with spanning support and observed strong-vote majority; reciprocal graph views agree or retain a strict choice","minimum_spanning_fragments":settings.min_junction_fragments,"limited_alignments":"omitted from every candidate; reported as unknown, not counted as observed opposition for primary output","incomplete_path_search":"no relaxed join","cycle_rule":"one highest-scoring enumerated complete cycle with supported corridor boundaries; unresolved alleles and phase retained locally; strict final criteria unchanged"},"score_is_correctness_probability":false,"alignment":{"mode":"full-query affine-gap fitting; free target flanks, no query clipping","seed_length":17,"seed_start_margin":12,"maximum_seed_starts_per_strand":256,"gap_open_log_score":-8.0,"gap_extend_log_score":-2.0,"quality_error_floor":0.001,"outlier_log_floor":-12.0},"fragment_pool":"identical names for all paths, recruited by unique source-anchor 31-mers on either mate; prefer R1 when both qualify, fixed anchor before alignment, no conditioning on the other mate placement; empirical weights are not renormalized over found hits","maximum_paths_per_anchor":MAX_PATHS,"maximum_search_states_per_anchor":MAX_STATES,"maximum_pending_states_per_anchor":MAX_STATES,"search_order":"increasing accumulated intermediate bases, then full node history and target ID; scheduling only, not a selection score","maximum_intermediate_bases":max_bases,"context_bases":context,"selection":{"minimum_score_margin":10.0,"minimum_margin_over_root_sum_squared_deltas":3.0,"strong_fragment_log_margin":2.3,"minimum_spanning_fragments":settings.min_junction_fragments,"max_strong_minor_major_ratio":settings.max_error_fraction},"scan":scan,"distinct_scored_fragment_names":names.len(),"anchor_count":anchors.len(),"short_terminal_anchor_count":short_terminal_anchors,"selected_connections":connections.len(),"loci":reports}),
+        report: json!({"method":"complete graph paths between sample-only anchors; full-query affine-gap alignment and one empirical paired-fragment score per name","fragment_model":training.report,"end_assembly":end_assembly,"complete_cycle_comparison":complete_cycles.report,"primary_selection":{"local_rule":"highest fragment score with spanning support and observed strong-vote majority; reciprocal graph views agree or retain a strict choice","minimum_spanning_fragments":settings.min_junction_fragments,"limited_alignments":"omitted from every candidate; reported as unknown, not counted as observed opposition for primary output","incomplete_path_search":"no relaxed join","cycle_rule":"one highest-scoring enumerated complete cycle with supported corridor boundaries; unresolved alleles and phase retained locally; strict final criteria unchanged"},"score_is_correctness_probability":false,"alignment":{"mode":"full-query affine-gap fitting; free target flanks, no query clipping","seed_length":17,"seed_start_margin":12,"maximum_seed_starts_per_strand":256,"gap_open_log_score":-8.0,"gap_extend_log_score":-2.0,"quality_error_floor":0.001,"outlier_log_floor":-12.0},"anchor_contexts":anchor_contexts,"anchor_seed_policy":"prefer 31; sample-unique 47/63 contexts rescue ambiguous short seeds without changing graph k or join evidence","fragment_pool":"identical names for all paths, recruited by unique source-anchor adaptive contexts on either mate; prefer R1 when both qualify, fixed anchor before alignment, no conditioning on the other mate placement; empirical weights are not renormalized over found hits","maximum_paths_per_anchor":MAX_PATHS,"maximum_search_states_per_anchor":MAX_STATES,"maximum_pending_states_per_anchor":MAX_STATES,"search_order":"increasing accumulated intermediate bases, then full node history and target ID; scheduling only, not a selection score","maximum_intermediate_bases":max_bases,"context_bases":context,"selection":{"minimum_score_margin":10.0,"minimum_margin_over_root_sum_squared_deltas":3.0,"strong_fragment_log_margin":2.3,"minimum_spanning_fragments":settings.min_junction_fragments,"max_strong_minor_major_ratio":settings.max_error_fraction},"scan":scan,"distinct_scored_fragment_names":names.len(),"anchor_count":anchors.len(),"short_terminal_anchor_count":short_terminal_anchors,"selected_connections":connections.len(),"loci":reports}),
     })
 }
 

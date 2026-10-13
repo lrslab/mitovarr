@@ -1,6 +1,6 @@
 # mitovarr CLI reference
 
-Captured from `mitovarr 0.1.0` on 2026-10-05. Assembly commands are grouped into de novo assembly (`assemble-baited`, `assemble-seeded`) and mapping assembly (`assemble-mapping`). Current examples are in the [README](../README.md); method details are in the [documentation index](README.md). Regenerate these help sections after changing CLI options or defaults.
+Captured from `mitovarr 0.1.0` with unreleased fixes on 2026-10-12. Assembly commands are grouped into de novo assembly (`assemble-baited`, `assemble-seeded`) and mapping assembly (`assemble-mapping`). Current examples are in the [README](../README.md); method details are in the [documentation index](README.md). Regenerate these help sections after changing CLI options or defaults.
 
 ## Top-level commands
 
@@ -183,6 +183,8 @@ Options:
           Maximum sequence length between local anchors, including the anchors [default: 2000]
       --local-max-paths <LOCAL_MAX_PATHS>
           Maximum local paths; reaching a search limit leaves the window unresolved [default: 128]
+      --local-max-kmers <LOCAL_MAX_KMERS>
+          Maximum distinct kmers per local graph; on overflow retain the full-BAM partial consensus [default: 2000000]
       --scoring-threads <SCORING_THREADS>
           Worker threads for deep validation; results keep input order. Capped by available CPUs [default: 4]
       --ref <REFERENCE>

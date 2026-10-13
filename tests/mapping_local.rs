@@ -198,7 +198,7 @@ fn assemble(dir: &Fixture, out: &str, extra: &[&str]) -> (bool, Vec<u8>, Value) 
     assemble_mode(dir, out, extra, true)
 }
 
-fn assemble_mode(dir: &Fixture, out: &str, extra: &[&str], deep: bool) -> (bool, Vec<u8>, Value) {
+fn mapping_cli(dir: &Fixture, out: &str, extra: &[&str], deep: bool) -> Cli {
     let mut args = vec![
         "mitovarr".into(),
         "assemble-mapping".into(),
@@ -218,7 +218,11 @@ fn assemble_mode(dir: &Fixture, out: &str, extra: &[&str], deep: bool) -> (bool,
         args.push("--deep-validation".into());
     }
     args.extend(extra.iter().map(|s| s.to_string()));
-    let status = run(Cli::try_parse_from(args).unwrap()).unwrap();
+    Cli::try_parse_from(args).unwrap()
+}
+
+fn assemble_mode(dir: &Fixture, out: &str, extra: &[&str], deep: bool) -> (bool, Vec<u8>, Value) {
+    let status = run(mapping_cli(dir, out, extra, deep)).unwrap();
     let sequence = load_reference(&dir.path(&format!("{out}/candidate.fasta")), None)
         .unwrap()
         .sequence;
@@ -230,6 +234,89 @@ fn assemble_mode(dir: &Fixture, out: &str, extra: &[&str], deep: bool) -> (bool,
 }
 fn circular_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && [a, a].concat().windows(b.len()).any(|s| s == b)
+}
+
+#[test]
+fn local_graph_cap_retains_full_bam_consensus_without_claiming_fastq_validation() {
+    let dir = Fixture::new();
+    let sample = dna(2000, 124891);
+    inputs(
+        &dir,
+        &sample,
+        &sample,
+        &(0..sample.len()).collect::<Vec<_>>(),
+        false,
+        false,
+    );
+    for (out, deep) in [("limited-fast", false), ("limited-deep", true)] {
+        let (available, candidate, local) =
+            assemble_mode(&dir, out, &["--local-max-kmers", "5"], deep);
+        assert_eq!(available, !deep);
+        assert_eq!(candidate, sample);
+        assert_eq!(local["status"], "resource_limited");
+        assert_eq!(local["resource_limit"]["observed"], 6);
+        assert_eq!(local["resource_limit"]["limit"], 5);
+        assert_eq!(local["named_pairs"], Value::Null);
+        assert_eq!(local["sample_kmers"], Value::Null);
+        assert_eq!(local["fastq_scan_complete"], false);
+        assert_eq!(local["all_windows_resolved"], false);
+        let root: Value =
+            serde_json::from_slice(&fs::read(dir.path(&format!("{out}/report.json"))).unwrap())
+                .unwrap();
+        assert_eq!(root["strict_validation_passed"], false);
+        assert_eq!(root["final_published"], false);
+        assert_eq!(root["records"], sample.len());
+        assert_eq!(root["subsampling"]["enabled"], false);
+        assert!(dir.path(&format!("{out}/base_votes.tsv")).exists());
+        assert_eq!(dir.path(&format!("{out}/consensus.fasta")).exists(), !deep);
+        if !deep {
+            assert_eq!(
+                load_reference(&dir.path(&format!("{out}/consensus.fasta")), None)
+                    .unwrap()
+                    .sequence,
+                sample
+            );
+        }
+        let fasta = dir.path(&format!("{out}/candidate.fasta"));
+        let uncertainty = dir.path(&format!("{out}/structural_ambiguity.tsv"));
+        let annotated = dir.path(&format!("{out}/annotated"));
+        assert!(run(Cli::parse_from([
+            "mitovarr",
+            "annotate",
+            "--fasta",
+            fasta.to_str().unwrap(),
+            "--species",
+            "cel",
+            "--topology",
+            "linear",
+            "--assembly-ambiguity",
+            uncertainty.to_str().unwrap(),
+            "--out",
+            annotated.to_str().unwrap()
+        ]))
+        .is_ok());
+    }
+}
+
+#[test]
+fn local_input_errors_are_not_misreported_as_a_resource_limited_consensus() {
+    let dir = Fixture::new();
+    let sample = dna(1000, 91887);
+    inputs(
+        &dir,
+        &sample,
+        &sample,
+        &(0..sample.len()).collect::<Vec<_>>(),
+        false,
+        false,
+    );
+    fs::write(dir.path("r1.fq"), b"invalid FASTQ\n").unwrap();
+    assert!(run(mapping_cli(&dir, "malformed", &[], false)).is_err());
+    assert!(!dir.path("malformed/consensus.fasta").exists());
+    assert!(!dir.path("malformed/candidate.fasta").exists());
+    let root: Value =
+        serde_json::from_slice(&fs::read(dir.path("malformed/report.json")).unwrap()).unwrap();
+    assert_eq!(root["status"], "failed");
 }
 fn insertion(at: usize, noisy: bool) -> (Fixture, Vec<u8>, Vec<u8>) {
     let dir = Fixture::new();

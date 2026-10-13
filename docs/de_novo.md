@@ -18,6 +18,11 @@ Larger k can distinguish longer repeat contexts, but each read supplies fewer wi
 
 Each invocation still builds one main-k graph, with the smaller-k end proposal stage below. The command does not automatically choose among k=63/95/127 outputs. Raw k-mer support mass and fragment scores from different runs are not a shared cross-k score, and annotation never selects a graph.
 
+Main and end-graph counting reuse the per-pair deduplication buffer and update
+each retained key with one table lookup. Every pair is still streamed in full,
+each canonical k-mer still contributes at most once per pair, and a full key
+table accepts further observations of existing keys while rejecting a new key.
+
 Retained k-mers become two directed edges, one for each strand, between their (k−1)-base prefix and suffix nodes. The graph is compacted into nonbranching unitigs. The following operations repeat until no further edges qualify. Tip/weak-link cleanup and repeat routes retain `--max-error-fraction 0.2`; local bubbles use the independent `--max-bubble-fraction 0.49`.
 
 - Remove a dead-end tip of at most 2k edges when its maximum support is at most 0.2 times the competing boundary-edge support.
@@ -69,9 +74,12 @@ the source/target metadata as well as the walk states, end assembly allows at
 most 10,000 directed endpoint pairs (source count multiplied by target count)
 when a smaller-k end search is enabled.
 This bounds the two-k target report to 20,000 entries. Exceeding this limit
-returns an explicit error with the endpoint counts before building the pair
-metadata or rescanning reads. This is a graph-search metadata limit, not a
-FASTQ pair or memory measurement, and it does not trigger automatic subsampling.
+skips optional end search before allocating pair metadata or rescanning reads.
+The complete main graph and available primary/candidate sequences are retained;
+`end_assembly.status=resource_limited` reports the observed count and cap.
+Complete publication is withheld with reason `end_search_resource_limit`.
+This is a graph-search metadata limit, not a FASTQ input count, and it does not
+trigger automatic subsampling.
 
 Simple cyclic strongly connected components with one internal successor/predecessor per segment are represented as a turn count plus an exit position. Candidate counts are bounded by the existing path domain; the unsearched high-copy tail stays explicit. The repeat report compares observed R1 31-mer occurrence counts passing the optional base-quality cutoff with the number of motif instances in each candidate at local unique-flank depth. Repeated offsets in R1 are retained; R2 is excluded from this statistic to avoid mate-overlap inflation. These predictions assume similar local sampling and no extra motif source. They are diagnostic, do not add an independent likelihood to the same reads, and do not establish an upper copy bound.
 
@@ -81,7 +89,7 @@ NCR1 completion is optional for a partial deliverable. The additive
 `sequence_output` report describes sequence availability independently of the
 strict completion status. Evaluate genes on the frozen primary sequence using
 [the partial-result workflow](partial_results.md); unresolved NCR1 alone does
-not fail gene-level annotation checks. Assembly/path search is unchanged.
+not fail gene-level annotation checks. Partial availability does not relax path validation.
 
 `primary.fasta` is the default downstream representative. Observed-majority local paths can extend it across supported short alternatives; a common-backbone cycle uses one whole candidate's paired-fragment score. `primary_ambiguity.tsv` marks the corresponding variable regions and open ends, and `report.json.primary` records its source and `final_verified`. Alternative path FASTAs and their read scores remain available. A primary sequence is a hypothesis when final status is unresolved; a closed graph walk alone does not establish NCR repeat copy number. See [primary path rules](paired_paths.md#primary-path-output).
 

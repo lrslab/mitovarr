@@ -1,9 +1,13 @@
 //! Seeded, full-query affine-gap alignment. Reference flanks are free; query ends are not.
 use crate::{io::fastq::Record, kmer};
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
+mod blocks;
 pub(crate) mod profile;
+
+#[cfg(test)]
+mod fitting_tests;
 
 const SEED: usize = 17;
 const BAND: usize = 12;
@@ -39,6 +43,8 @@ struct OrientedQuery {
     sequence: Vec<u8>,
     quality: Vec<u8>,
     seeds: Vec<(usize, kmer::Code)>,
+    emissions: Vec<[f64; 2]>,
+    blocks: Option<blocks::ExactBlocks>,
     ideal: f64,
 }
 
@@ -69,15 +75,30 @@ impl Prepared {
             // Seeds propose placements; quality is evidence in emission scores,
             // not a hidden hard cutoff that can erase every seed in a read.
             kmer::visit(&sequence, None, SEED, 0, |p, c| seeds.push((p, c)));
-            let ideal = sequence
+            let emissions: Vec<_> = sequence
                 .iter()
                 .zip(&quality)
-                .map(|(&b, &q)| emission(b, b, q))
-                .sum();
+                .map(|(&b, &q)| {
+                    static SCORES: LazyLock<[[f64; 2]; 256]> = LazyLock::new(|| {
+                        std::array::from_fn(|q| {
+                            [emission(b'A', b'A', q as u8), emission(b'A', b'C', q as u8)]
+                        })
+                    });
+                    if b"ACGT".contains(&b) {
+                        SCORES[usize::from(q)]
+                    } else {
+                        [0.25f64.ln(); 2]
+                    }
+                })
+                .collect();
+            let ideal = emissions.iter().map(|scores| scores[0]).sum();
+            let blocks = blocks::ExactBlocks::new(&sequence, edit_budget(sequence.len()));
             OrientedQuery {
                 sequence,
                 quality,
                 seeds,
+                emissions,
+                blocks,
                 ideal,
             }
         });
@@ -171,7 +192,7 @@ impl Index {
         let cache = &mut prepared.rescues[orientation];
         let hits = cache
             .entry(target.to_vec())
-            .or_insert_with(|| fitting_candidates(&query.sequence, &query.quality, target));
+            .or_insert_with(|| fitting_candidates(query, target));
         for hit in hits {
             if hit.edits <= (prepared.length / 10).max(3) {
                 let mut hit = hit.clone();
@@ -193,7 +214,6 @@ impl Index {
         for (orientation, query) in prepared.orientations.iter().enumerate() {
             let reverse = orientation == 1;
             let sequence = &query.sequence;
-            let quality = &query.quality;
             let mut starts = BTreeSet::new();
             for &(q, code) in &query.seeds {
                 if let Some(positions) = self.seeds.get(&code) {
@@ -251,7 +271,7 @@ impl Index {
                 let cache = &mut prepared.windows[orientation];
                 let hits = cache
                     .entry(target.to_vec())
-                    .or_insert_with(|| fitting_candidates(sequence, quality, target));
+                    .or_insert_with(|| fitting_candidates(query, target));
                 for hit in hits {
                     let mut hit = hit.clone();
                     hit.start += left;
@@ -468,69 +488,121 @@ fn best(a: Cell, b: Cell) -> Cell {
 /// bases. This excludes only paths that the caller would reject anyway.
 #[cfg(test)]
 fn fitting(query: &[u8], quality: &[u8], target: &[u8]) -> Option<Hit> {
-    fitting_candidates(query, quality, target)
+    let read = Record {
+        header: "@fitting".into(),
+        sequence: query.to_vec(),
+        plus: "+".into(),
+        quality: quality.to_vec(),
+    };
+    fitting_candidates(&Prepared::new(&read).orientations[0], target)
         .into_iter()
         .next()
 }
 
-fn fitting_candidates(query: &[u8], quality: &[u8], target: &[u8]) -> Vec<Hit> {
+fn fitting_candidates(query: &OrientedQuery, target: &[u8]) -> Vec<Hit> {
+    let max_edits = edit_budget(query.sequence.len());
+    if query.sequence.is_empty()
+        || target.is_empty()
+        || query.sequence.len() > target.len() + max_edits
+        || query.blocks.as_ref().is_some_and(|b| !b.possible(target))
+    {
+        return Vec::new();
+    }
     let empty = Cell {
         score: NEG,
         start: 0,
         edits: 0,
     };
-    let mut m: Vec<_> = (0..=target.len())
-        .map(|start| Cell {
-            score: 0.0,
-            start,
-            edits: 0,
+    // One in-place row retains M, I and best(M, I, D). The previous diagonal
+    // and the current left M/D are scalars, so no second row or full-row
+    // clearing is needed. The recurrence and its tie order are unchanged.
+    #[derive(Clone, Copy)]
+    struct Column {
+        matched: Cell,
+        inserted: Cell,
+        best: Cell,
+    }
+    let empty_column = Column {
+        matched: empty,
+        inserted: empty,
+        best: empty,
+    };
+    let mut row: Vec<_> = (0..=target.len())
+        .map(|start| {
+            let initial = Cell {
+                score: 0.0,
+                start,
+                edits: 0,
+            };
+            Column {
+                matched: initial,
+                inserted: empty,
+                best: best(best(initial, empty), empty),
+            }
         })
         .collect();
-    let mut ins = vec![empty; m.len()];
-    let mut del = vec![empty; m.len()];
-    let mut next_m = vec![empty; m.len()];
-    let mut next_i = vec![empty; m.len()];
-    let mut next_d = vec![empty; m.len()];
-    let max_edits = (query.len() / 10).max(3);
-    if query.len() > target.len() + max_edits {
-        return Vec::new();
-    }
-    for (i, &base) in query.iter().enumerate() {
-        next_m.fill(empty);
-        next_i.fill(empty);
-        next_d.fill(empty);
-        next_i[0] = best(m[0].advance(GAP_OPEN, 1), ins[0].advance(GAP_EXTEND, 1));
-        let match_score = emission(base, base, quality[i]);
-        let mismatch_base = if base == b'A' { b'C' } else { b'A' };
-        let mismatch_score = emission(base, mismatch_base, quality[i]);
+    let mut previous_hi = target.len();
+    for (i, (&base, &[match_score, mismatch_score])) in
+        query.sequence.iter().zip(&query.emissions).enumerate()
+    {
         let lo = (i + 1).saturating_sub(max_edits).max(1);
         let hi = (target.len() + max_edits)
-            .saturating_sub(query.len() - i - 1)
+            .saturating_sub(query.sequence.len() - i - 1)
             .min(target.len());
-        for j in lo..=hi {
-            next_m[j] = best(best(m[j - 1], ins[j - 1]), del[j - 1]).advance(
-                if !b"ACGT".contains(&target[j - 1]) {
+        // Both band edges move by at most one column per query base. An
+        // entering upper column had no previous-row state; a leaving lower
+        // column is cleared only after its diagonal has been saved.
+        if hi > previous_hi {
+            row[hi] = empty_column;
+        }
+        previous_hi = hi;
+        let mut diagonal = row[lo - 1].best;
+        if lo > 1 {
+            row[lo - 1] = empty_column;
+        }
+        let inserted = best(
+            row[0].matched.advance(GAP_OPEN, 1),
+            row[0].inserted.advance(GAP_EXTEND, 1),
+        );
+        row[0] = Column {
+            matched: empty,
+            inserted,
+            best: best(best(empty, inserted), empty),
+        };
+        let mut left_m = empty;
+        let mut left_d = empty;
+        for (column, &target_base) in row[lo..=hi].iter_mut().zip(&target[lo - 1..hi]) {
+            let matched = diagonal.advance(
+                if !b"ACGT".contains(&target_base) {
                     0.25f64.ln()
-                } else if base == target[j - 1] {
+                } else if base == target_base {
                     match_score
                 } else {
                     mismatch_score
                 },
-                usize::from(base != target[j - 1]),
+                usize::from(base != target_base),
             );
-            next_i[j] = best(m[j].advance(GAP_OPEN, 1), ins[j].advance(GAP_EXTEND, 1));
-            next_d[j] = best(
-                next_m[j - 1].advance(GAP_OPEN, 1),
-                next_d[j - 1].advance(GAP_EXTEND, 1),
+            let inserted = best(
+                column.matched.advance(GAP_OPEN, 1),
+                column.inserted.advance(GAP_EXTEND, 1),
             );
+            let deleted = best(left_m.advance(GAP_OPEN, 1), left_d.advance(GAP_EXTEND, 1));
+            diagonal = column.best;
+            *column = Column {
+                matched,
+                inserted,
+                best: best(best(matched, inserted), deleted),
+            };
+            left_m = matched;
+            left_d = deleted;
         }
-        std::mem::swap(&mut m, &mut next_m);
-        std::mem::swap(&mut ins, &mut next_i);
-        std::mem::swap(&mut del, &mut next_d);
     }
-    let mut hits: Vec<_> = (1..=target.len())
-        .filter_map(|end| {
-            let cell = best(best(m[end], ins[end]), del[end]);
+    let mut hits: Vec<_> = row
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter_map(|(end, column)| {
+            let cell = column.best;
             (cell.score > NEG / 2.0 && end > cell.start && cell.edits <= max_edits).then_some(Hit {
                 start: cell.start,
                 end,

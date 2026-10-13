@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Reduce seeded alignment and mate-rescue work with in-place affine score rows,
+  cached per-quality emissions and a lossless disjoint-block rejection check.
+  Reuse per-fragment k-mer sets and use one count lookup in main/end graph builds.
+  Preserve full input, alignment scores and tie order, candidate searches,
+  evidence limits and publication decisions; retain the prior fitting kernel
+  as a differential test oracle.
+- Recover sample-only path anchors and shared fragment recruitment using adaptive
+  31/47/63-base contexts when short duplicated graph fragments obscure uniqueness.
+  Preserve the main graph k, input scope and spanning/structural evidence gates.
+- Enforce called-base and span preservation at the mapping maximum-consensus
+  output boundary, including deep best-effort mode; retain unsafe alternatives
+  only in diagnostic files and report rejected patches.
+- Retain the complete main de novo graph when optional endpoint metadata exceeds
+  its limit, withholding complete publication. Add `--local-max-kmers` (default
+  2,000,000) and retain full-BAM partial consensus when local graph work reaches
+  a resource cap. Report incomplete FASTQ validation explicitly; input errors
+  and incomplete BAM pileups still fail.
+
 ## 0.1.0 - 2026-10-10
 
 ### Package and interfaces

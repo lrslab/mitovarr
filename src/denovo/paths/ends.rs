@@ -263,13 +263,8 @@ pub(super) fn augment(
             incoming[id] += 1;
         }
     }
-    let mut occurrence = HashMap::new();
-    for s in &graph.segments {
-        kmer::visit(&s.sequence, None, 31, 0, |_, c| {
-            *occurrence.entry(kmer::canonical(c, 31)).or_default() += 1;
-        });
-    }
-    let anchors = path_anchors(graph, settings.k, &occurrence);
+    let seeds = seeds::Seeds::new(graph, settings.k.clamp(31, 63));
+    let anchors = path_anchors(graph, settings.k, &seeds);
     let mut sources: Vec<_> = anchors
         .iter()
         .copied()
@@ -283,17 +278,11 @@ pub(super) fn augment(
     sources.sort_unstable();
     sinks.sort_unstable();
     let small_ks: Vec<_> = [47, 31].into_iter().filter(|&k| k < settings.k).collect();
-    let endpoint_pairs = sources.len().checked_mul(sinks.len()).ok_or_else(|| {
-        anyhow::anyhow!(
-            "end-search endpoint-pair metadata limit: source_ends={} target_ends={} endpoint_pairs=overflow maximum_endpoint_pairs={MAX_ENDPOINT_PAIRS}",
-            sources.len(), sinks.len()
-        )
-    })?;
-    ensure!(
-        small_ks.is_empty() || endpoint_pairs <= MAX_ENDPOINT_PAIRS,
-        "end-search endpoint-pair metadata limit: source_ends={} target_ends={} endpoint_pairs={endpoint_pairs} maximum_endpoint_pairs={MAX_ENDPOINT_PAIRS}",
-        sources.len(), sinks.len()
-    );
+    let endpoint_pairs = sources.len().saturating_mul(sinks.len());
+    let endpoint_limited = !small_ks.is_empty() && endpoint_pairs > MAX_ENDPOINT_PAIRS;
+    // The main graph has already consumed all input reads. An optional bridge
+    // metadata limit must retain that graph, without allocating all pairs or
+    // pretending that the omitted competitors have been searched.
     let mut by_sequence = HashMap::<_, Vec<_>>::new();
     for (id, segment) in graph.segments.iter().enumerate() {
         by_sequence
@@ -312,7 +301,7 @@ pub(super) fn augment(
         })
         .collect();
     let mut roles = BTreeMap::new();
-    if !small_ks.is_empty() {
+    if !small_ks.is_empty() && !endpoint_limited {
         for &to in &sinks {
             let backbone = reachable_segments(graph, to);
             for &from in &sources {
@@ -324,17 +313,22 @@ pub(super) fn augment(
         }
     }
     let mut proposed = BTreeMap::<Bridge, BTreeSet<usize>>::new();
-    let mut limited_sources = BTreeSet::new();
+    let mut limited_sources: BTreeSet<_> = sources
+        .iter()
+        .copied()
+        .filter(|_| endpoint_limited)
+        .collect();
     let mut limited_pairs = BTreeSet::new();
     let mut searches = Vec::new();
     let mut target_searches = Vec::new();
-    for &small_k in &small_ks {
+    for &small_k in small_ks.iter().filter(|_| !endpoint_limited) {
         if sources.is_empty() || sinks.is_empty() {
             break;
         }
         let mut counts = HashMap::<kmer::Code, u32>::new();
+        let mut fragment = HashSet::new();
         fastq::scan_pairs(&reads.r1, &reads.r2, |_, a, b| {
-            let mut fragment = HashSet::new();
+            fragment.clear();
             for read in [a, b] {
                 kmer::visit(
                     &read.sequence,
@@ -346,12 +340,14 @@ pub(super) fn augment(
                     },
                 );
             }
-            for c in fragment {
-                ensure!(
-                    counts.contains_key(&c) || counts.len() < limits.max_kmers,
-                    "end assembly exceeds --max-kmers at k={small_k}"
-                );
-                let n = counts.entry(c).or_default();
+            for &c in &fragment {
+                let n = if counts.len() < limits.max_kmers {
+                    counts.entry(c).or_default()
+                } else {
+                    counts.get_mut(&c).ok_or_else(|| {
+                        anyhow::anyhow!("end assembly exceeds --max-kmers at k={small_k}")
+                    })?
+                };
                 *n = n.saturating_add(1);
             }
             Ok(())
@@ -566,6 +562,8 @@ pub(super) fn augment(
         augmented,
         json!({"method":"sample-only small-k paths between unique graph ends; full main-k overlap at both flanks; reciprocal candidate spellings; joint fragment scoring decides joins",
         "k_values":small_ks,
+        "status":if endpoint_limited{"resource_limited"}else{"searched"},
+        "resource_limit":if endpoint_limited{Some(json!({"resource":"endpoint_pairs","observed":endpoint_pairs,"limit":MAX_ENDPOINT_PAIRS,"action":"retain main graph; defer end bridges and complete publication"}))}else{None},
         "source_ends":sources.len(),"target_ends":sinks.len(),"endpoint_pairs":endpoint_pairs,"maximum_endpoint_pairs":MAX_ENDPOINT_PAIRS,"maximum_added_bases":max_bases,
         "maximum_states_per_end_per_k":MAX_STATES,"maximum_candidates_per_end_per_k":MAX_PATHS,
         "reachability_pruning":"target-specific suffix reachability is an over-approximation; require full main-k flank at arrival and stop at the first complete endpoint",
@@ -625,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn excessive_endpoint_metadata_is_rejected_before_reading_fastq() {
+    fn excessive_endpoint_metadata_preserves_graph_without_reading_fastq() {
         let mut seed = 783411u64;
         let mut sequences = Vec::new();
         for _ in 0..51 {
@@ -665,24 +663,27 @@ mod tests {
             max_kmers: 100_000,
             min_baseq: 0,
         };
-        let error = augment(&graph, &reads, &out, &settings, &resource_limits, 1000)
-            .err()
-            .expect("endpoint cap must reject before opening missing FASTQ")
-            .to_string();
-        assert!(
-            error.contains("end-search endpoint-pair metadata limit"),
-            "{error}"
-        );
-        assert!(error.contains("source_ends=102 target_ends=102"), "{error}");
-        assert!(
-            error.contains("endpoint_pairs=10404 maximum_endpoint_pairs=10000"),
-            "{error}"
-        );
-        assert!(!out.exists());
-
-        // No smaller-k search exists at main k=31, so its former no-op
-        // behavior must neither enforce this metadata cap nor open FASTQ.
         std::fs::create_dir(&out).unwrap();
+        let (unchanged, report) =
+            augment(&graph, &reads, &out, &settings, &resource_limits, 1000).unwrap();
+        assert_eq!(unchanged.outgoing, graph.outgoing);
+        assert!(unchanged
+            .segments
+            .iter()
+            .zip(&graph.segments)
+            .all(|(a, b)| a.sequence == b.sequence));
+        assert_eq!(report["status"], "resource_limited");
+        assert_eq!(report["resource_limit"]["observed"], 10_404);
+        assert_eq!(report["resource_limit"]["limit"], 10_000);
+        assert_eq!(report["limited_sources"].as_array().unwrap().len(), 102);
+        assert_eq!(report["target_searches"], json!([]));
+        assert_eq!(report["directed_connections_added"], 0);
+        assert!(out.join("path_graph.gfa").exists());
+        assert!(std::fs::read(out.join("end_bridge_candidates.fasta"))
+            .unwrap()
+            .is_empty());
+
+        // At main k=31 no optional smaller-k search is requested.
         let shorter_k = GraphSettings { k: 31, ..settings };
         let (unchanged, report) =
             augment(&graph, &reads, &out, &shorter_k, &resource_limits, 1000).unwrap();
@@ -693,6 +694,50 @@ mod tests {
         assert_eq!(report["k_values"], json!([]));
         assert_eq!(report["target_searches"], json!([]));
         assert_eq!(report["directed_connections_added"], 0);
+
+        // Exercise the complete output path with full synthetic input: this
+        // optional cap must no longer erase the already assembled main graph.
+        let mut r1 = File::create(&reads.r1).unwrap();
+        let mut r2 = File::create(&reads.r2).unwrap();
+        for (i, sequence) in sequences.iter().enumerate() {
+            for copy in 0..3 {
+                for (mate, writer, sequence) in [
+                    (1, &mut r1, sequence.clone()),
+                    (2, &mut r2, kmer::reverse_complement(sequence)),
+                ] {
+                    writeln!(
+                        writer,
+                        "@end_{i}_{copy}/{mate}\n{}\n+\n{}",
+                        String::from_utf8_lossy(&sequence),
+                        "I".repeat(sequence.len())
+                    )
+                    .unwrap();
+                }
+            }
+        }
+        drop(r1);
+        drop(r2);
+        let assembled = out.join("assembled");
+        std::fs::create_dir(&assembled).unwrap();
+        assert!(!crate::denovo::assemble(
+            &reads,
+            &reads,
+            &assembled,
+            &settings,
+            &resource_limits,
+            None,
+            false
+        )
+        .unwrap());
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(assembled.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["reason"], "end_search_resource_limit");
+        assert_eq!(report["assembly_reads"]["pairs"], sequences.len() * 3);
+        assert_eq!(report["final_published"], false);
+        assert_eq!(report["sequence_output"]["status"], "partial_available");
+        assert!(assembled.join("primary.fasta").exists());
+        assert!(assembled.join("candidates.fasta").exists());
+        assert!(!assembled.join("consensus.fasta").exists());
         std::fs::remove_dir_all(out).unwrap();
     }
 

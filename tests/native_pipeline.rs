@@ -134,6 +134,52 @@ fn equivalent_circle(a: &[u8], b: &[u8]) -> bool {
 }
 
 #[test]
+fn full_graph_at_kmer_cap_keeps_existing_counts_and_rejects_only_new_keys() {
+    let dir = Fixture::new();
+    let genome = dna(600, 819235);
+    let reads = circle_reads(&genome);
+    write_reads(&dir, &reads, false);
+    assert!(assembly(&dir, "assemble-baited", "uncapped", &[]));
+    let baseline = report(&dir, "uncapped");
+    let count = baseline["distinct_kmers"].as_u64().unwrap();
+    assert_eq!(count, 600);
+    assert!(assembly(
+        &dir,
+        "assemble-baited",
+        "at_cap",
+        &["--max-kmers", &count.to_string()],
+    ));
+    let capped = report(&dir, "at_cap");
+    assert_eq!(capped["assembly_reads"]["pairs"], reads.len());
+    for field in ["graph_simplification", "read_threading", "validation"] {
+        assert_eq!(baseline[field], capped[field], "{field}");
+    }
+    for file in ["assembly_graph.gfa", "consensus.fasta", "coverage.tsv"] {
+        assert_eq!(
+            fs::read(dir.path(&format!("uncapped/{file}"))).unwrap(),
+            fs::read(dir.path(&format!("at_cap/{file}"))).unwrap(),
+            "{file}"
+        );
+    }
+    let args = vec![
+        "mitovarr".to_owned(),
+        "assemble-baited".into(),
+        "--r1".into(),
+        dir.path("r1.fq").display().to_string(),
+        "--r2".into(),
+        dir.path("r2.fq").display().to_string(),
+        "--out".into(),
+        dir.path("below_cap").display().to_string(),
+        "--max-kmers".into(),
+        (count - 1).to_string(),
+    ];
+    let error = run(Cli::try_parse_from(args).unwrap()).unwrap_err();
+    assert!(error.to_string().contains("assembly exceeds --max-kmers"));
+    assert_eq!(report(&dir, "below_cap")["final_published"], false);
+    assert!(!dir.path("below_cap/consensus.fasta").exists());
+}
+
+#[test]
 fn default_assembly_keeps_supported_kmers_below_q20_with_explicit_filter_opt_in() {
     let dir = Fixture::new();
     let genome = dna(600, 9123);

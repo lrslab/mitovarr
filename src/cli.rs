@@ -237,6 +237,9 @@ pub struct MappingArgs {
     /// Maximum local paths; reaching a search limit leaves the window unresolved.
     #[arg(long, default_value_t = 128)]
     pub local_max_paths: usize,
+    /// Maximum distinct kmers per local graph; on overflow retain the full-BAM partial consensus.
+    #[arg(long, default_value_t = 2_000_000)]
+    pub local_max_kmers: usize,
     /// Worker threads for deep validation; results keep input order. Capped by available CPUs.
     #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u16).range(1..=64))]
     pub scoring_threads: u16,
