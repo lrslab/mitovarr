@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Speed up de novo graph cleanup without changing results: bubble searches
+  keep per-round successor/twin lists and mark the current walk instead of
+  cloning and rescanning paths; the edit-distance check reuses two rows;
+  compaction stores one outgoing run per node; removed k-mers use the k-mer
+  hasher. The prior search and edit-distance kernels remain as differential
+  test oracles. All 27 cel/ctro panel strains are byte-identical; ctro QG5638
+  at an 8M cap drops from 800 to 207 s and cel NIC262 from 438 to 143 s.
+
 - Add opt-in de novo `--subsample` / `--subsample-seed`. Only after all complete
   pairs exceed `--max-kmers`, keep seeded fragment-name-priority pairs at 1/2,
   1/4 … 1/64 until the graph fits, write them as `subsampled.R*.fastq` and
