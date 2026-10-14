@@ -106,6 +106,24 @@ Complete publication is withheld with reason `end_search_resource_limit`.
 This is a graph-search metadata limit, not a FASTQ input count, and it does not
 trigger automatic subsampling.
 
+### Subsampling after a `--max-kmers` overflow
+
+Every de novo run first counts k-mers from all complete pairs. Without
+`--subsample`, more distinct k-mers than `--max-kmers` is an error, as before.
+With `--subsample`, that full-input overflow is the recorded trigger: the run
+keeps complete pairs whose seeded fragment-name priority lies in the lowest 1/2,
+then 1/4, and so on to 1/64, stopping at the first fraction whose graph fits.
+Mates stay together and the selection does not depend on read order; change it
+with `--subsample-seed` (default 42). Retained pairs are written as
+`subsampled.R1.fastq` / `subsampled.R2.fastq` and used for graph construction,
+threading, path scoring and optional layouts. Final read validation still uses
+**all** complete pairs. `report.json.subsampling` records the trigger and cap,
+each attempted fraction, original and retained pair/base counts, the seed and
+this evidence scope; when the full input fits it reports `applied=false` and no
+file is written. Input and validation scopes are unchanged. Typical triggers are
+very deep extracted libraries whose sequencing-error k-mers far outnumber the
+genome's; lower retained depth can also lose weak junction or repeat support.
+
 Simple cyclic strongly connected components with one internal successor/predecessor per segment are represented as a turn count plus an exit position. Candidate counts are bounded by the existing path domain; the unsearched high-copy tail stays explicit. The repeat report compares observed R1 31-mer occurrence counts passing the optional base-quality cutoff with the number of motif instances in each candidate at local unique-flank depth. Repeated offsets in R1 are retained; R2 is excluded from this statistic to avoid mate-overlap inflation. These predictions assume similar local sampling and no extra motif source. They are diagnostic, do not add an independent likelihood to the same reads, and do not establish an upper copy bound.
 
 ## Outputs and status

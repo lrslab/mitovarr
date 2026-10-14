@@ -235,6 +235,8 @@ publication remain independent. See [mapping coverage layouts](docs/mapping_loca
 
 Only after a full-input run hits a documented input/memory limit, explicitly add `--subsample --max-records 1000000` (default sampling seed 42, adjustable by `--subsample-seed`). Selection retains all target-BAM records for each selected QNAME under the record cap. With local assembly, the corresponding complete FASTQ pairs are saved as `subsampled.R1.fastq` / `subsampled.R2.fastq` and used for the graph and scoring. A retained BAM fragment lacking a complete supplied pair contributes only pileup evidence. Counts and scope are reported under `report.json.subsampling`; coverage/variant fractions describe the retained evidence.
 
+De novo `assemble-baited` / `assemble-seeded` accept the same explicit `--subsample` (seed `--subsample-seed`, default 42). It acts only after all complete pairs exceed `--max-kmers`, then halves the retained pairs (down to 1/64) until the graph fits; final read validation still uses all pairs. See [de novo subsampling](docs/de_novo.md#subsampling-after-a---max-kmers-overflow).
+
 ## Gene annotation, rotation and NCRs
 
 ```bash

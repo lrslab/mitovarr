@@ -103,6 +103,10 @@ Options:
           Hard limit on distinct kmers in each recruitment or assembly set [default: 2000000]
       --min-baseq <MIN_BASEQ>
           Optional hard base-quality cutoff; 0 disables it. Qualities still inform read scores [default: 0]
+      --subsample
+          Only after all pairs exceed --max-kmers: halve the retained complete pairs (down to 1/64) for graph assembly; final validation still uses all pairs
+      --subsample-seed <SUBSAMPLE_SEED>
+          Seed for fragment-name priority sampling (not a data integrity fingerprint) [default: 42]
   -h, --help
           Print help
 ```
@@ -143,6 +147,10 @@ Options:
           Hard limit on distinct kmers in each recruitment or assembly set [default: 2000000]
       --min-baseq <MIN_BASEQ>
           Optional hard base-quality cutoff; 0 disables it. Qualities still inform read scores [default: 0]
+      --subsample
+          Only after all pairs exceed --max-kmers: halve the retained complete pairs (down to 1/64) for graph assembly; final validation still uses all pairs
+      --subsample-seed <SUBSAMPLE_SEED>
+          Seed for fragment-name priority sampling (not a data integrity fingerprint) [default: 42]
       --seed <SEED>
 
       --bait-k <BAIT_K>

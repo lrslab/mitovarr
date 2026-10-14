@@ -194,6 +194,18 @@ pub struct AssemblyArgs {
     pub graph: GraphSettings,
     #[command(flatten)]
     pub limits: Limits,
+    /// Only after all pairs exceed --max-kmers: halve the retained complete pairs (down to 1/64) for graph assembly; final validation still uses all pairs.
+    #[arg(long)]
+    pub subsample: bool,
+    /// Seed for fragment-name priority sampling (not a data integrity fingerprint).
+    #[arg(long, default_value_t = 42, requires = "subsample")]
+    pub subsample_seed: u64,
+}
+
+impl AssemblyArgs {
+    pub fn subsample_seed(&self) -> Option<u64> {
+        self.subsample.then_some(self.subsample_seed)
+    }
 }
 
 #[derive(Debug, Args)]

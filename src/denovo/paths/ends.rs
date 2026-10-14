@@ -841,7 +841,8 @@ mod tests {
             &settings,
             &resource_limits,
             None,
-            false
+            false,
+            None
         )
         .unwrap());
         let report: Value =

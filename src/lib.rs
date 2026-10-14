@@ -69,6 +69,7 @@ pub fn run(cli: cli::Cli) -> Result<bool> {
             &args.limits,
             None,
             false,
+            args.subsample_seed(),
         ),
         Commands::AssembleBaited(args) => denovo::assemble(
             &args.reads,
@@ -78,6 +79,7 @@ pub fn run(cli: cli::Cli) -> Result<bool> {
             &args.limits,
             None,
             true,
+            args.subsample_seed(),
         ),
         Commands::AssembleSeeded(args) => {
             let a = &args.assembly;
@@ -103,6 +105,7 @@ pub fn run(cli: cli::Cli) -> Result<bool> {
                 &a.limits,
                 Some(recruited.report),
                 false,
+                a.subsample_seed(),
             )
         }
         Commands::AssembleMapping(args) => mapping_assembly::assemble(&args),

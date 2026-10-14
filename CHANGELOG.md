@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add opt-in de novo `--subsample` / `--subsample-seed`. Only after all complete
+  pairs exceed `--max-kmers`, keep seeded fragment-name-priority pairs at 1/2,
+  1/4 … 1/64 until the graph fits, write them as `subsampled.R*.fastq` and
+  report the trigger, attempts and counts in `report.json.subsampling`. Final
+  read validation still uses all pairs; without the option an overflow remains
+  an error.
+
 - Label each mapping maximum-consensus N run filled at the existing span as a
   `fixed_span_graph_fill` row in `maximum_consensus.ambiguity.tsv`. Annotation
   reports it as NCR `sequence_origin` and locus `evidence_status`, so a filled

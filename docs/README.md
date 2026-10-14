@@ -219,7 +219,8 @@ after a full-input run actually reaches a documented resource limit. Preserve
 complete pairs and record the triggering limit, retained counts and fixed seed.
 An unresolved repeat or graph-search cap alone is not a reason to discard reads.
 See [mapping subsampling](mapping_local_assembly.md#optional-high-depth-subsampling)
-for the explicit sampling option and its evidence scope.
+and [de novo subsampling](de_novo.md#subsampling-after-a---max-kmers-overflow)
+for the explicit sampling options and their evidence scope.
 
 ## Detailed guides
 

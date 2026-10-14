@@ -649,6 +649,126 @@ fn validate(
     ))
 }
 
+/// Count each canonical k-mer once per complete pair. `None` means the distinct
+/// set exceeds `--max-kmers`. With `(seed, n)`, only pairs whose seeded name
+/// priority lies in the lowest 1/2^n are counted; the returned scan describes them.
+fn count_kmers(
+    reads: &Reads,
+    settings: &GraphSettings,
+    limits: &Limits,
+    sample: Option<(u64, u32)>,
+) -> Result<Option<(graph_kmer::Map<u32>, fastq::Scan)>> {
+    let mut counts = graph_kmer::Map::<u32>::default();
+    let mut fragment = graph_kmer::Set::default();
+    let mut retained = fastq::Scan { pairs: 0, bases: 0 };
+    let mut exceeded = false;
+    let scan = fastq::scan_pairs(&reads.r1, &reads.r2, |_, a, b| {
+        if let Some((seed, halvings)) = sample {
+            if !retained_pair(a.name(1)?, seed, halvings) {
+                return Ok(());
+            }
+        }
+        retained.pairs += 1;
+        retained.bases += (a.sequence.len() + b.sequence.len()) as u64;
+        fragment.clear();
+        for read in [a, b] {
+            graph_kmer::visit(
+                &read.sequence,
+                Some(&read.quality),
+                settings.k,
+                limits.min_baseq,
+                |_, code| {
+                    fragment.insert(graph_kmer::canonical(code, settings.k));
+                },
+            );
+        }
+        for &code in &fragment {
+            let count = if counts.len() < limits.max_kmers {
+                counts.entry(code).or_default()
+            } else if let Some(count) = counts.get_mut(&code) {
+                count
+            } else {
+                exceeded = true;
+                anyhow::bail!("assembly exceeds --max-kmers");
+            };
+            *count = count.saturating_add(1);
+        }
+        Ok(())
+    });
+    match scan {
+        Ok(_) => Ok(Some((counts, retained))),
+        Err(_) if exceeded => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+const MAX_SUBSAMPLE_HALVINGS: u32 = 6;
+
+fn retained_pair(name: &str, seed: u64, halvings: u32) -> bool {
+    crate::subsample::priority(name.as_bytes(), seed).leading_zeros() >= halvings
+}
+
+/// Runs only after all complete pairs exceeded `--max-kmers`. Halve the retained
+/// pairs until the graph fits, write them for every assembly stage and report the
+/// trigger. Final read validation keeps using the caller's complete input.
+fn subsample(
+    reads: &Reads,
+    out: &Path,
+    settings: &GraphSettings,
+    limits: &Limits,
+    seed: u64,
+) -> Result<(graph_kmer::Map<u32>, fastq::Scan, Option<Reads>, Value)> {
+    let mut attempts = vec![json!({"fraction":1.0,"status":"exceeds_max_kmers"})];
+    for halvings in 1..=MAX_SUBSAMPLE_HALVINGS {
+        let fraction = 0.5f64.powi(halvings as i32);
+        let Some((counts, scan)) = count_kmers(reads, settings, limits, Some((seed, halvings)))?
+        else {
+            attempts.push(json!({"fraction":fraction,"status":"exceeds_max_kmers"}));
+            continue;
+        };
+        attempts.push(json!({"fraction":fraction,"status":"within_max_kmers",
+            "retained_pairs":scan.pairs,"distinct_kmers":counts.len()}));
+        let sampled = Reads {
+            r1: out.join("subsampled.R1.fastq"),
+            r2: out.join("subsampled.R2.fastq"),
+        };
+        let mut one = BufWriter::new(File::create(&sampled.r1)?);
+        let mut two = BufWriter::new(File::create(&sampled.r2)?);
+        let original = fastq::scan_pairs(&reads.r1, &reads.r2, |_, a, b| {
+            if retained_pair(a.name(1)?, seed, halvings) {
+                a.write(&mut one)?;
+                b.write(&mut two)?;
+            }
+            Ok(())
+        })?;
+        one.flush()?;
+        two.flush()?;
+        info!(
+            original_pairs = original.pairs,
+            retained_pairs = scan.pairs,
+            fraction,
+            "all pairs exceeded --max-kmers; assembling deterministic subsample"
+        );
+        let report = json!({"enabled":true,"applied":true,
+            "trigger":{"limit":"--max-kmers","max_kmers":limits.max_kmers,
+                "observed":"distinct k-mers from all complete pairs exceeded the limit"},
+            "method":"complete pairs whose seeded fragment-name priority lies in the lowest 1/2^n; mates kept together; independent of read order",
+            "seed":seed,"fraction":fraction,"attempts":attempts,
+            "original_pairs":original.pairs,"original_bases":original.bases,
+            "retained_pairs":scan.pairs,"retained_bases":scan.bases,
+            "original_r1":reads.r1.canonicalize()?,"original_r2":reads.r2.canonicalize()?,
+            "retained_r1":"subsampled.R1.fastq","retained_r2":"subsampled.R2.fastq",
+            "evidence_scope":"graph construction, read threading, path scoring and optional layouts use retained pairs; final read validation uses all complete pairs",
+            "limitation":"retained depth is lower everywhere; low-frequency alleles and weak junction or repeat support can be lost from graph assembly"});
+        return Ok((counts, scan, Some(sampled), report));
+    }
+    anyhow::bail!(
+        "assembly exceeds --max-kmers even after subsampling to 1/{} of complete pairs; no final assembly published",
+        1u32 << MAX_SUBSAMPLE_HALVINGS
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn assemble(
     reads: &Reads,
     validation_reads: &Reads,
@@ -657,6 +777,7 @@ pub fn assemble(
     limits: &Limits,
     recruitment: Option<Value>,
     bam_baited: bool,
+    subsample_seed: Option<u64>,
 ) -> Result<bool> {
     ensure!(
         (15..=127).contains(&settings.k) && settings.k % 2 == 1,
@@ -680,33 +801,21 @@ pub fn assemble(
             && settings.max_validation_pairs > 0,
         "assembly thresholds and limits must be positive"
     );
-    let mut counts = graph_kmer::Map::<u32>::default();
-    let mut fragment = graph_kmer::Set::default();
-    let scan = fastq::scan_pairs(&reads.r1, &reads.r2, |_, a, b| {
-        fragment.clear();
-        for read in [a, b] {
-            graph_kmer::visit(
-                &read.sequence,
-                Some(&read.quality),
-                settings.k,
-                limits.min_baseq,
-                |_, code| {
-                    fragment.insert(graph_kmer::canonical(code, settings.k));
-                },
-            );
+    let (counts, scan, sampled, subsampling) = match count_kmers(reads, settings, limits, None)? {
+        Some((counts, scan)) => (
+            counts,
+            scan,
+            None,
+            json!({"enabled":subsample_seed.is_some(),"applied":false}),
+        ),
+        None => {
+            let seed = subsample_seed.ok_or_else(|| {
+                anyhow::anyhow!("assembly exceeds --max-kmers; no final assembly published")
+            })?;
+            subsample(reads, out, settings, limits, seed)?
         }
-        for &code in &fragment {
-            let count = if counts.len() < limits.max_kmers {
-                counts.entry(code).or_default()
-            } else {
-                counts.get_mut(&code).ok_or_else(|| {
-                    anyhow::anyhow!("assembly exceeds --max-kmers; no final assembly published")
-                })?
-            };
-            *count = count.saturating_add(1);
-        }
-        Ok(())
-    })?;
+    };
+    let reads = sampled.as_ref().unwrap_or(reads);
     info!(
         pairs = scan.pairs,
         distinct_kmers = counts.len(),
@@ -907,7 +1016,7 @@ pub fn assemble(
         "status":if complete{"complete"}else{"unresolved"},"reason":reason,"final_published":complete,
         "parameters":{"k":settings.k,"min_kmer_count":settings.min_kmer_count,"max_error_fraction":settings.max_error_fraction,"max_bubble_fraction":settings.max_bubble_fraction,"min_baseq":limits.min_baseq,"min_depth":settings.min_depth,"min_junction_fragments":settings.min_junction_fragments,"max_kmers":limits.max_kmers,"max_validation_pairs":settings.max_validation_pairs},
         "input_scope":if bam_baited {"mt-bam-extracted"} else {"original-paired-fastq"},"validation_scope":if bam_baited {"mt-bam-extracted"} else {"original-complete-paired-fastq"},
-        "assembly_r1":reads.r1.canonicalize()?,"assembly_r2":reads.r2.canonicalize()?,"assembly_reads":scan,
+        "assembly_r1":reads.r1.canonicalize()?,"assembly_r2":reads.r2.canonicalize()?,"assembly_reads":scan,"subsampling":subsampling,
         "distinct_kmers":counts.len(),"retained_canonical_kmers":edges.len()/2,"minimum_retained_pair_count":edges.iter().map(|e|e.count).min(),"directed_branch_nodes":branches,
         "graph_simplification":simplification,
         "read_threading":read_threading,

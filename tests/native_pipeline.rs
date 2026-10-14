@@ -179,6 +179,150 @@ fn full_graph_at_kmer_cap_keeps_existing_counts_and_rejects_only_new_keys() {
     assert!(!dir.path("below_cap/consensus.fasta").exists());
 }
 
+/// Deep error-carrying pairs: each copy has one substitution, so distinct
+/// error k-mers grow with depth while the genome stays fixed.
+fn deep_reads_with_errors(genome: &[u8], copies: usize) -> Vec<(String, Vec<u8>, Vec<u8>)> {
+    let mut records = circle_reads(genome);
+    for (start, (_, r1, r2)) in circle_reads(genome).into_iter().enumerate() {
+        for copy in 0..copies {
+            let mut r1 = r1.clone();
+            let position = (start * 7 + copy * 13) % r1.len();
+            r1[position] = match r1[position] {
+                b'A' => b'C',
+                b'C' => b'G',
+                b'G' => b'T',
+                _ => b'A',
+            };
+            records.push((format!("read{start}_{copy}"), r1, r2.clone()));
+        }
+    }
+    records
+}
+
+fn fastq_names(path: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    fastq::scan_pairs(
+        path,
+        &path.with_file_name(
+            path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace("R1", "R2"),
+        ),
+        |_, a, _| {
+            names.push(a.name(1)?.to_owned());
+            Ok(())
+        },
+    )
+    .unwrap();
+    names.sort();
+    names
+}
+
+#[test]
+fn subsampling_runs_only_after_full_input_exceeds_kmer_cap_and_validates_all_pairs() {
+    let dir = Fixture::new();
+    let genome = dna(600, 4410);
+    let records = deep_reads_with_errors(&genome, 8);
+    write_reads(&dir, &records, false);
+    assert!(assembly(
+        &dir,
+        "assemble-baited",
+        "uncapped",
+        &["--subsample"]
+    ));
+    let full = report(&dir, "uncapped");
+    assert_eq!(full["subsampling"]["enabled"], true);
+    assert_eq!(full["subsampling"]["applied"], false);
+    assert!(!dir.path("uncapped/subsampled.R1.fastq").exists());
+    let distinct = full["distinct_kmers"].as_u64().unwrap();
+    let cap = (distinct * 6 / 10).to_string();
+
+    // Without the opt-in, exceeding the cap still fails.
+    let args = vec![
+        "mitovarr".to_owned(),
+        "assemble-baited".into(),
+        "--r1".into(),
+        dir.path("r1.fq").display().to_string(),
+        "--r2".into(),
+        dir.path("r2.fq").display().to_string(),
+        "--out".into(),
+        dir.path("strict").display().to_string(),
+        "--max-kmers".into(),
+        cap.clone(),
+    ];
+    let error = run(Cli::try_parse_from(args).unwrap()).unwrap_err();
+    assert!(error.to_string().contains("assembly exceeds --max-kmers"));
+
+    assert!(assembly(
+        &dir,
+        "assemble-baited",
+        "sampled",
+        &["--max-kmers", &cap, "--subsample"],
+    ));
+    let sampled = report(&dir, "sampled");
+    let s = &sampled["subsampling"];
+    assert_eq!(s["applied"], true);
+    assert_eq!(s["trigger"]["limit"], "--max-kmers");
+    // Halve until the graph fits: every earlier attempt exceeded the cap.
+    let attempts = s["attempts"].as_array().unwrap();
+    assert!(attempts.len() >= 2);
+    let (last, earlier) = attempts.split_last().unwrap();
+    assert!(earlier.iter().all(|a| a["status"] == "exceeds_max_kmers"));
+    assert_eq!(earlier[0]["fraction"], 1.0);
+    assert_eq!(last["status"], "within_max_kmers");
+    assert_eq!(
+        s["fraction"].as_f64().unwrap(),
+        0.5f64.powi(earlier.len() as i32)
+    );
+    assert_eq!(s["original_pairs"], records.len());
+    let retained = s["retained_pairs"].as_u64().unwrap();
+    assert!(retained > 0 && retained < records.len() as u64);
+    assert_eq!(sampled["assembly_reads"]["pairs"], retained);
+    assert!(sampled["distinct_kmers"].as_u64().unwrap() <= cap.parse().unwrap());
+    let names = fastq_names(&dir.path("sampled/subsampled.R1.fastq"));
+    assert_eq!(names.len() as u64, retained);
+    // Final validation reads every complete pair, not the subsample.
+    assert_eq!(sampled["validation"]["scan"]["pairs"], records.len());
+    assert_eq!(
+        sampled["validation"]["input_r1"],
+        fs::canonicalize(dir.path("r1.fq"))
+            .unwrap()
+            .display()
+            .to_string()
+    );
+    assert_eq!(sampled["final_published"], true);
+    let consensus = load_reference(&dir.path("sampled/consensus.fasta"), None).unwrap();
+    assert!(equivalent_circle(&genome, &consensus.sequence));
+
+    // The retained set depends on names and seed, not on read order.
+    let reversed = Fixture::new();
+    let mut backwards = records.clone();
+    backwards.reverse();
+    write_reads(&reversed, &backwards, true);
+    assert!(assembly(
+        &reversed,
+        "assemble-baited",
+        "sampled",
+        &["--max-kmers", &cap, "--subsample"],
+    ));
+    assert_eq!(
+        fastq_names(&reversed.path("sampled/subsampled.R1.fastq")),
+        names
+    );
+    assert!(assembly(
+        &reversed,
+        "assemble-baited",
+        "other_seed",
+        &["--max-kmers", &cap, "--subsample", "--subsample-seed", "7"],
+    ));
+    assert_ne!(
+        fastq_names(&reversed.path("other_seed/subsampled.R1.fastq")),
+        names
+    );
+}
+
 #[test]
 fn default_assembly_keeps_supported_kmers_below_q20_with_explicit_filter_opt_in() {
     let dir = Fixture::new();

@@ -9,6 +9,18 @@ use std::{
 };
 
 type Key = (u64, Vec<u8>);
+
+/// Seeded fragment-name priority shared by mapping and de novo subsampling.
+/// Fixed FNV mixing plus avalanche: selection priority, not an integrity hash.
+pub(crate) fn priority(name: &[u8], seed: u64) -> u64 {
+    let mut x = 0xcbf29ce484222325u64 ^ seed;
+    for b in name {
+        x = (x ^ u64::from(*b)).wrapping_mul(0x100000001b3);
+    }
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    x ^ (x >> 31)
+}
 pub(crate) struct Selection {
     entries: BTreeMap<Key, usize>,
     cutoff: Option<Key>,
@@ -30,14 +42,7 @@ impl Selection {
         }
     }
     fn key(&self, name: &[u8]) -> Key {
-        // Fixed FNV mixing plus avalanche: selection priority, not an integrity hash.
-        let mut x = 0xcbf29ce484222325u64 ^ self.seed;
-        for b in name {
-            x = (x ^ u64::from(*b)).wrapping_mul(0x100000001b3);
-        }
-        x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
-        (x ^ (x >> 31), name.to_vec())
+        (priority(name, self.seed), name.to_vec())
     }
     pub fn observe(&mut self, name: &[u8]) {
         self.seen += 1;
