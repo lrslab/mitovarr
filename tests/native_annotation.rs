@@ -120,6 +120,60 @@ fn partial_cds_and_rnas_are_not_counted_as_complete() {
 }
 
 #[test]
+fn rna_terminal_substitutions_are_full_length_but_missing_ends_are_not() {
+    // CaenDR C. tropicalis strains carry A where NC_025756.1 tRNA-Trp starts with G.
+    let mut p = Panel::bundled(Species::Ctro).unwrap();
+    p.genes.retain(|g| g.name == "tRNA-Trp");
+    let q = dna(&p, "tRNA-Trp");
+    let flank = b"CCCCCCCCCCCCCCCCCCCC".to_vec();
+    let call = |gene: Vec<u8>, left: &[u8], right: &[u8]| {
+        let seq = [left.to_vec(), gene, right.to_vec()].concat();
+        let prediction = predict(&seq, &p, false);
+        prediction
+            .features
+            .into_iter()
+            .find(|f| f.name == "tRNA-Trp")
+            .unwrap()
+    };
+    let swap = |b: u8| if b == b'A' { b'G' } else { b'A' };
+
+    let mut first = q.clone();
+    first[0] = swap(first[0]);
+    let f = call(first, &flank, &flank);
+    assert!(f.full_length_supported, "{f:?}");
+    assert_eq!(f.five_prime_boundary, "terminal_mismatch");
+    assert_eq!(f.three_prime_boundary, "aligned");
+    assert_eq!((f.segments[0].start, f.length), (flank.len() + 1, q.len()));
+
+    let mut last = q.clone();
+    *last.last_mut().unwrap() = swap(*last.last().unwrap());
+    let f = call(last, &flank, &flank);
+    assert!(f.full_length_supported, "{f:?}");
+    assert_eq!(f.three_prime_boundary, "terminal_mismatch");
+    assert_eq!(f.length, q.len());
+
+    // An ambiguous or absent terminal base never completes an RNA.
+    let mut ambiguous = q.clone();
+    ambiguous[0] = b'N';
+    let f = call(ambiguous, &flank, &flank);
+    assert!(!f.full_length_supported);
+    assert_eq!(f.five_prime_boundary, "partial_or_uncertain");
+    let f = call(q[1..].to_vec(), b"NNNNNNNNNN", b"NNNNNNNNNN");
+    assert!(!f.full_length_supported);
+    let f = call(q[..q.len() - 1].to_vec(), b"NNNNNNNNNN", b"NNNNNNNNNN");
+    assert!(!f.full_length_supported);
+    assert_eq!(f.three_prime_boundary, "partial_or_uncertain");
+
+    // Three clipped bases exceed the substitution allowance.
+    let mut three = q.clone();
+    for b in &mut three[..3] {
+        *b = swap(*b);
+    }
+    let f = call(three, &flank, &flank);
+    assert!(!f.full_length_supported);
+}
+
+#[test]
 fn clipped_cds_tail_is_not_a_polyadenylated_stop() {
     let p = panel(&["ND4"]);
     let q = dna(&p, "ND4");

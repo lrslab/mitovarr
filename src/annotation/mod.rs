@@ -253,6 +253,30 @@ fn feature(model: &GeneModel, hit: Hit, target: &[u8], n: usize, reverse: bool) 
                 three = "orf_inferred";
             }
         }
+    } else {
+        // Local alignment clips a terminal substitution (e.g. a strain difference
+        // in the first tRNA base). At most two clipped bases are restored, only
+        // onto called sample bases next to a supported aligned end; missing or
+        // ambiguous bases never complete an RNA.
+        let called = |range: std::ops::Range<usize>| {
+            target
+                .get(range)
+                .is_some_and(|bases| bases.iter().all(|b| b"ACGT".contains(b)))
+        };
+        if (1..=2).contains(&hit.qstart) && hit.terminal_supported(true) {
+            if let Some(projected) = start.checked_sub(hit.qstart) {
+                if called(projected..start) {
+                    start = projected;
+                    five = "terminal_mismatch";
+                }
+            }
+        }
+        let missing = query.len() - hit.qend;
+        if (1..=2).contains(&missing) && hit.terminal_supported(false) && called(end..end + missing)
+        {
+            end += missing;
+            three = "terminal_mismatch";
+        }
     }
     if end <= start || end - start > n {
         return None;

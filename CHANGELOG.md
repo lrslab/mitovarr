@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Restore tRNA/rRNA termini clipped by one or two called sample bases next to a
+  supported aligned end, labelled `terminal_mismatch` (e.g. the CaenDR
+  *C. tropicalis* tRNA-Trp first base). Missing or ambiguous ends stay partial;
+  the tRNA-Pro rotation origin still requires an `aligned` 5' boundary.
+
 - Recover supported partial primary paths across local alleles and competing
   reciprocal views. Report partial-primary allele evidence separately, retain
   unresolved conflicts, and preserve strict join/publication criteria.
