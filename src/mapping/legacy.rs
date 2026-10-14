@@ -472,6 +472,35 @@ pub(super) fn write_hypotheses(
                 )?;
             }
         }
+        if label == "maximum_consensus" {
+            // Filled bases come from sample graph walks constrained to the existing
+            // span: their sequence is inferred and their length is not measured.
+            for p in proposed {
+                let base = project(p.start, false);
+                let baseline = &backbone[p.start..p.end];
+                let filled: Vec<_> = (0..baseline.len())
+                    .map(|j| baseline[j] == b'N' && p.sequence[j] != b'N')
+                    .collect();
+                let mut j = 0;
+                while j < filled.len() {
+                    if !filled[j] {
+                        j += 1;
+                        continue;
+                    }
+                    let run = j;
+                    while j < filled.len() && filled[j] {
+                        j += 1;
+                    }
+                    writeln!(
+                        uncertainty,
+                        "{name}\t{}\t{}\tlocal_locus_{}\tfixed_span_graph_fill\t0",
+                        base + run + 1,
+                        base + j,
+                        p.locus
+                    )?;
+                }
+            }
+        }
         uncertainty.flush()?;
         outputs.push(json!({"file":file,"ambiguity_file":uncertainty_file,"length":sequence.len(),
             "ambiguous_bases":sequence.iter().filter(|&&b|b==b'N').count(),"inferred_replacements":proposed.len(),"final_verified":verified}));
@@ -566,6 +595,20 @@ mod tests {
                 usize::from(i != 3)
             );
             assert_eq!(report["outputs"][0]["final_verified"], false);
+            // Only bases filled in the exported maximum consensus are labelled.
+            let fills: Vec<_> =
+                std::fs::read_to_string(out.join("maximum_consensus.ambiguity.tsv"))
+                    .unwrap()
+                    .lines()
+                    .filter(|l| l.contains("fixed_span_graph_fill"))
+                    .map(str::to_owned)
+                    .collect();
+            let expected_fills = if i == 3 {
+                vec!["MtDNA\t5\t6\tlocal_locus_1\tfixed_span_graph_fill\t0".to_owned()]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(fills, expected_fills);
             // Alternative structures stay explicitly diagnostic and available.
             assert_eq!(
                 crate::io::fasta::load_reference(&out.join("legacy_bridge.fasta"), None)

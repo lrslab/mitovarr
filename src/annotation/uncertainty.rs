@@ -214,6 +214,8 @@ pub(super) fn project(
                 "open_contig_end"
             } else if unknown {
                 "unknown_sequence"
+            } else if matched.iter().any(|r| r.reason == FIXED_SPAN_FILL) {
+                "fixed_span_graph_fill"
             } else if matched.iter().any(|r| {
                 matches!(
                     r.reason.as_str(),
@@ -239,6 +241,23 @@ pub(super) fn project(
         structural_resolution_from_reads: "not_certified_by_coordinate_projection",
         regions,
         ncr_loci,
+    }
+}
+
+/// Mapping maximum-consensus bases filled by sample-graph walks at the existing
+/// span. Their sequence is inferred and their length is a reference-guided prior.
+const FIXED_SPAN_FILL: &str = "fixed_span_graph_fill";
+
+/// Record fill provenance on NCR intervals; all other origins stay not assessed.
+pub(super) fn label_ncr_origins(analysis: &Analysis, ncr: &mut NcrAnalysis) {
+    for region in &mut ncr.regions {
+        if analysis
+            .regions
+            .iter()
+            .any(|r| r.reason == FIXED_SPAN_FILL && overlaps(&r.segments, &region.segments))
+        {
+            region.sequence_origin = FIXED_SPAN_FILL;
+        }
     }
 }
 

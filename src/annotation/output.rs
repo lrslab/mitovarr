@@ -97,9 +97,9 @@ fn gff_ncr(writer: &mut impl Write, contig: &str, r: &NcrRegion) -> Result<()> {
         } else {
             "region"
         };
-        writeln!(writer,"{}\tmitovarr\t{}\t{}\t{}\t.\t.\t.\tID={};Name={};part={}/{};boundary_status={};ambiguous_bases={};left_gene={};right_gene={};sequence_origin=not_assessed",
+        writeln!(writer,"{}\tmitovarr\t{}\t{}\t{}\t.\t.\t.\tID={};Name={};part={}/{};boundary_status={};ambiguous_bases={};left_gene={};right_gene={};sequence_origin={}",
             escape(contig),kind,s.start,s.end,r.id,r.name,i+1,r.segments.len(),r.boundary_status,r.ambiguous_bases,
-            r.left_genes.iter().map(|x|escape(x)).collect::<Vec<_>>().join(","),r.right_genes.iter().map(|x|escape(x)).collect::<Vec<_>>().join(","))?;
+            r.left_genes.iter().map(|x|escape(x)).collect::<Vec<_>>().join(","),r.right_genes.iter().map(|x|escape(x)).collect::<Vec<_>>().join(","),r.sequence_origin)?;
     }
     Ok(())
 }
@@ -136,7 +136,7 @@ pub(super) fn write(
     let mut quality_table = BufWriter::new(File::create(out.join("gene_quality.tsv"))?);
     writeln!(quality_table,"contig\tgene\ttype\tstatus\tplacements\tfull_length_placements\tfeature_ids\tassembly_region_ids\tissues\tassembly_ambiguity_supplied")?;
     let mut ncr_gff = BufWriter::new(File::create(out.join("ncr.gff3"))?);
-    writeln!(ncr_gff,"##gff-version 3\n# coordinates=annotated.fasta; labels=positional; sequence_origin=not_assessed")?;
+    writeln!(ncr_gff,"##gff-version 3\n# coordinates=annotated.fasta; labels=positional; sequence_origin=not_assessed unless a fixed_span_graph_fill is supplied")?;
     let mut ncr_table = BufWriter::new(File::create(out.join("ncr.tsv"))?);
     writeln!(ncr_table,"contig\tid\tname\tlocus\tsegments_1based\tlength\tleft_genes\tright_genes\tboundary_status\tterminal_fragment\tambiguous_bases\tat_fraction_called_bases\tsequence_origin\tembedded_partial_homologs")?;
     let mut loci_table = BufWriter::new(File::create(out.join("ncr_loci.tsv"))?);

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Label each mapping maximum-consensus N run filled at the existing span as a
+  `fixed_span_graph_fill` row in `maximum_consensus.ambiguity.tsv`. Annotation
+  reports it as NCR `sequence_origin` and locus `evidence_status`, so a filled
+  NCR1 (e.g. the cel read-dropout core) is not read as a measured length.
+  Sequences and other outputs are unchanged.
+
 - Restore tRNA/rRNA termini clipped by one or two called sample bases next to a
   supported aligned end, labelled `terminal_mismatch` (e.g. the CaenDR
   *C. tropicalis* tRNA-Trp first base). Missing or ambiguous ends stay partial;

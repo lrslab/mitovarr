@@ -136,6 +136,11 @@ backbone interval and every called A/C/G/T is preserved. If no patch qualifies,
 retain the backbone, including its N calls. Nearest-reference-length proposals
 remain available only in the separate diagnostic legacy FASTAs.
 `maximum_consensus_rejected_patches` records rejected loci and span changes.
+Each run of backbone N bases filled in the exported maximum consensus gets its
+own `maximum_consensus.ambiguity.tsv` row with reason `fixed_span_graph_fill`
+(alternatives 0), in addition to the window's `structural_validation_deferred`
+row. These bases are sample-graph inferences whose length is the existing span,
+not a measurement; annotation carries the label into NCR `sequence_origin`.
 Do not change a window that already has no N just to add repeat copies.
 Existing strict replacements outside these windows are retained.
 

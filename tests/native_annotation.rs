@@ -356,6 +356,95 @@ fn quality_run(temp: &Temp, sequence: &[u8], evidence: Option<&str>) -> Value {
 }
 
 #[test]
+fn fixed_span_fills_label_ncr_origin_without_changing_sequence() {
+    // Mapping maximum consensus reports filled N runs inside a deferred window.
+    let window = "sample\t13300\t13794\tlocal_locus_1\tstructural_validation_deferred\t1\n";
+    let fill = "sample\t13400\t13550\tlocal_locus_1\tfixed_span_graph_fill\t0\n";
+    for (rows, origin, status) in [
+        (
+            format!("{window}{fill}"),
+            "fixed_span_graph_fill",
+            "fixed_span_graph_fill",
+        ),
+        (
+            window.to_owned(),
+            "not_assessed",
+            "retained_assembly_alternatives",
+        ),
+    ] {
+        let temp = Temp::new();
+        let sequence = reference("cel");
+        let input = temp.0.join("consensus.fasta");
+        fs::write(
+            &input,
+            format!(">sample\n{}\n", String::from_utf8_lossy(&sequence)),
+        )
+        .unwrap();
+        let evidence = temp.0.join("ambiguity.tsv");
+        fs::write(
+            &evidence,
+            format!("sequence\tstart\tend\tevidence\treason\talternatives\n{rows}"),
+        )
+        .unwrap();
+        let out = temp.0.join("annotation");
+        let result = std::process::Command::new(env!("CARGO_BIN_EXE_mitovarr"))
+            .args(["annotate", "--species", "cel", "--topology", "circular"])
+            .arg("--fasta")
+            .arg(&input)
+            .arg("--assembly-ambiguity")
+            .arg(&evidence)
+            .arg("--out")
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            load_reference(&out.join("annotated.fasta"), None)
+                .unwrap()
+                .sequence,
+            sequence
+        );
+        let table = fs::read_to_string(out.join("ncr.tsv")).unwrap();
+        let origins: Vec<(String, String)> = table
+            .lines()
+            .skip(1)
+            .map(|l| {
+                let c: Vec<_> = l.split('\t').collect();
+                (c[3].to_owned(), c[12].to_owned())
+            })
+            .collect();
+        assert!(
+            origins.contains(&("NCR1".into(), origin.into())),
+            "{origins:?}"
+        );
+        assert!(origins
+            .iter()
+            .filter(|(locus, _)| locus != "NCR1")
+            .all(|(_, o)| o == "not_assessed"));
+        let gff = fs::read_to_string(out.join("ncr.gff3")).unwrap();
+        assert!(
+            gff.lines()
+                .any(|l| l.contains("Name=NCR1;")
+                    && l.ends_with(&format!("sequence_origin={origin}")))
+        );
+        let report: Value =
+            serde_json::from_slice(&fs::read(out.join("report.json")).unwrap()).unwrap();
+        let locus = report["records"][0]["assembly_evidence"]["ncr_loci"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["locus"] == "NCR1")
+            .unwrap()
+            .clone();
+        assert_eq!(locus["evidence_status"], status);
+    }
+}
+
+#[test]
 fn partial_genome_without_ncr1_retains_independent_gene_quality() {
     let temp = Temp::new();
     // The pinned cel fixture's last gene, tRNA-Ala, ends at 13328;

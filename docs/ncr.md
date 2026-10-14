@@ -68,9 +68,13 @@ whole-contig NCR. Multiple bounded copies remain separate regions.
 
 NCR sequences are extracted from sample bases, in forward genomic order. Unknown
 bases remain unchanged and are counted. `at_fraction` uses only called A/C/G/T
-bases and is null for an entirely ambiguous interval. `sequence_origin` remains
-`not_assessed`: positional annotation does not establish sequence ancestry,
-regulatory function, repeat copy number or a read-supported structural variant.
+bases and is null for an entirely ambiguous interval. `sequence_origin` is
+`not_assessed` unless `--assembly-ambiguity` reports a mapping
+`fixed_span_graph_fill` overlapping the interval; it is then
+`fixed_span_graph_fill`, meaning the bases were filled from sample-graph walks at
+the existing (reference-guided) span and the NCR length was not measured.
+Positional annotation does not establish sequence ancestry, regulatory function,
+repeat copy number or a read-supported structural variant.
 
 ## Files and status fields
 

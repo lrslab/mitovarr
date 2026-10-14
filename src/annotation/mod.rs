@@ -654,6 +654,9 @@ pub fn run(args: &AnnotationArgs) -> Result<bool> {
         let assembly_evidence = uncertainty
             .as_ref()
             .map(|input| uncertainty::project(input, record, i, &rotation, &prediction, &ncr));
+        if let Some(evidence) = &assembly_evidence {
+            uncertainty::label_ncr_origins(evidence, &mut ncr);
+        }
         let gene_quality = quality::assess(&panel, &prediction, assembly_evidence.as_ref());
         results.push(output::Annotated {
             sequence,
