@@ -4,6 +4,7 @@ mod discovery;
 mod graph;
 mod legacy;
 mod scoring;
+pub(crate) mod tandem;
 pub(crate) use discovery::Signals;
 
 use crate::{

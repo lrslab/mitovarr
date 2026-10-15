@@ -216,6 +216,16 @@ pub(super) fn project(
                 "unknown_sequence"
             } else if matched.iter().any(|r| r.reason == FIXED_SPAN_FILL) {
                 "fixed_span_graph_fill"
+            } else if matched
+                .iter()
+                .any(|r| r.reason == "tandem_repeat_length_conflict")
+            {
+                "tandem_repeat_length_conflict"
+            } else if matched
+                .iter()
+                .any(|r| r.reason == "tandem_repeat_length_unmeasured")
+            {
+                "tandem_repeat_length_unmeasured"
             } else if matched.iter().any(|r| {
                 matches!(
                     r.reason.as_str(),

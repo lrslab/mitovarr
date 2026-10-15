@@ -120,7 +120,7 @@ RNA 末端的错配可能被局部比对裁去。被裁去的 1–2 个已调用
 
 `--assembly-ambiguity` 会把证据关联到短 NCR、零长度 NCR 的两侧连接碱基以及重叠基因的共享碱基。因此，表示候选几何关系的 `annotation_status=adjacent_without_gap`，可以同时具有 `evidence_status=retained_assembly_alternatives`。前者不能当作已经确认的 NCR 缺失。仅位于侧翼基因内部、远离连接处的歧义不会自动归到 NCR。
 
-mapping 局部组装应传入与 `candidate.fasta` 配套的 `structural_ambiguity.tsv`。旋转后的证据保留在 `assembly_ambiguity.tsv`、GFF3 和 JSON 的 `assembly_evidence.ncr_loci` 中；TSV 列格式未改变。best-effort 的 `maximum_consensus.ambiguity.tsv` 会把在原有跨度内填补的 N 段单独标为 `fixed_span_graph_fill`；与其重叠的位点 `evidence_status` 为 `fixed_span_graph_fill`，`ncr.tsv`/`ncr.gff3` 的 `sequence_origin` 也写为该值，表示这些碱基来自样本图游走、长度沿用参考引导的原有跨度，并非实测长度。
+mapping 局部组装应传入与 `candidate.fasta` 配套的 `structural_ambiguity.tsv`。旋转后的证据保留在 `assembly_ambiguity.tsv`、GFF3 和 JSON 的 `assembly_evidence.ncr_loci` 中；TSV 列格式未改变。best-effort 的 `maximum_consensus.ambiguity.tsv` 会把在原有跨度内填补的 N 段单独标为 `fixed_span_graph_fill`；与其重叠的位点 `evidence_status` 为 `fixed_span_graph_fill`，`ncr.tsv`/`ncr.gff3` 的 `sequence_origin` 也写为该值，表示这些碱基来自样本图游走、长度沿用参考引导的原有跨度，并非实测长度。若与串联重复行 `tandem_repeat_length_unmeasured`（无读段跨越整个重复）或 `tandem_repeat_length_conflict`（跨越读段与共识长度不符）重叠，位点 `evidence_status` 记为相应值；重复间隔的读段下界见 mapping `report.json` 的 `tandem_repeats`。
 
 ### 不完整 CDS 的终止状态
 

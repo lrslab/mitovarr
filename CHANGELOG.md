@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Label tandem repeats in the best-effort mapping consensus whose length reads
+  do not measure. Blocks with unique flanking anchors are measured only by reads
+  carrying both anchors; others get a `tandem_repeat_length_unmeasured` (or
+  `_conflict`) row in `maximum_consensus.ambiguity.tsv`, and
+  `report.json.tandem_repeats` gives a read-derived lower bound. Annotation
+  reports the locus `evidence_status`. No copy number is inferred from depth;
+  sequences and other outputs are unchanged.
+
 - Speed up de novo graph cleanup without changing results: bubble searches
   keep per-round successor/twin lists and mark the current walk instead of
   cloning and rescanning paths; the edit-distance check reuses two rows;

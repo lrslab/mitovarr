@@ -356,11 +356,23 @@ fn quality_run(temp: &Temp, sequence: &[u8], evidence: Option<&str>) -> Value {
 }
 
 #[test]
-fn fixed_span_fills_label_ncr_origin_without_changing_sequence() {
-    // Mapping maximum consensus reports filled N runs inside a deferred window.
+fn assembly_length_evidence_labels_ncr_loci_without_changing_sequence() {
+    // Mapping maximum consensus reports filled N runs and unmeasured tandem-repeat
+    // lengths inside a deferred window; a fill takes precedence.
     let window = "sample\t13300\t13794\tlocal_locus_1\tstructural_validation_deferred\t1\n";
     let fill = "sample\t13400\t13550\tlocal_locus_1\tfixed_span_graph_fill\t0\n";
+    let tandem = "sample\t13420\t13600\ttandem_repeat_1\ttandem_repeat_length_unmeasured\t0\n";
     for (rows, origin, status) in [
+        (
+            format!("{window}{tandem}"),
+            "not_assessed",
+            "tandem_repeat_length_unmeasured",
+        ),
+        (
+            format!("{window}{fill}{tandem}"),
+            "fixed_span_graph_fill",
+            "fixed_span_graph_fill",
+        ),
         (
             format!("{window}{fill}"),
             "fixed_span_graph_fill",

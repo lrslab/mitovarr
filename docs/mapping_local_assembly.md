@@ -144,6 +144,34 @@ not a measurement; annotation carries the label into NCR `sequence_origin`.
 Do not change a window that already has no N just to add repeat copies.
 Existing strict replacements outside these windows are retained.
 
+### Tandem-repeat length evidence
+
+A reference-guided consensus keeps the reference span of a tandem repeat unless
+reads show otherwise, so its length is only measured where reads cross the
+whole repeat. With best-effort local assembly, the exported consensus is
+scanned for tandem blocks (period 2–75, at least 60 bases and two copies; 17 of
+every 20 bases match one period later). Each block gets the nearest unique,
+fully called 12-mer anchor on each side (searched up to 20 bases away). One pass
+over the supplied pairs, in both orientations, counts reads carrying both
+anchors (each gives the anchor gap) and reads entering from one anchor without
+the other.
+
+A block is `spanned` when at least three reads share the modal gap and spanning
+reads are at least half of the reads that had room to span it; a few
+contradicting spanning reads, e.g. PCR template-switch artefacts, do not
+qualify. A spanned gap equal to the consensus gap needs no row. Otherwise the
+block is written to `maximum_consensus.ambiguity.tsv` as
+`tandem_repeat_<i>` with reason `tandem_repeat_length_conflict` (spanned at a
+different gap) or `tandem_repeat_length_unmeasured`, split at the origin when
+needed. `report.json.tandem_repeats` lists every block with its period,
+anchors, consensus gap, spanning gaps, entering-read counts and
+`gap_lower_bound`: the third-longest one-sided entry minus the anchor length,
+plus one, i.e. the anchor gap exceeds what three reads entered without
+reaching the far anchor. Depth is never converted to copy number: in
+mt-BAM-extracted libraries, repeat depth relative to flanks varied more than
+four-fold between strains with identical read-verified repeats. Without
+best-effort local assembly the section reports `not_assessed`.
+
 The deep-mode legacy fallback uses complete main-k flanks and k=21/17/13/11 raw
 pair-counted edges. At each k, support starts at `--min-depth` (at least two)
 and may relax through its half/quarter values, three and two, stopping after

@@ -1,5 +1,5 @@
 use crate::{
-    cli::MappingArgs,
+    cli::{MappingArgs, Reads},
     consensus::{build_consensus_draft, finalize_consensus, ConsensusSettings},
     io::fasta::{load_reference, write_consensus_fasta},
     mapping,
@@ -12,7 +12,7 @@ use noodles_bam as bam;
 use noodles_core::Region;
 use noodles_sam::alignment::RecordBuf;
 use serde_json::json;
-use std::{fs, path::Path};
+use std::{fs, io::Write, path::Path};
 
 fn read_index(path: &Path) -> Result<bam::bai::Index> {
     let mut appended = path.as_os_str().to_owned();
@@ -180,6 +180,26 @@ pub fn assemble(args: &MappingArgs) -> Result<bool> {
         .and_then(|r| r.maximum_sequence.as_deref())
         .unwrap_or(sequence);
     let consensus_written = complete || args.best_effort;
+    // Tandem-repeat lengths in the exported consensus are measured only by reads
+    // carrying both flanks; label the rest in the consensus's own ambiguity TSV.
+    let tandem_repeats = match (args.best_effort, local.is_some()) {
+        (true, true) => {
+            let local_args = sampled_args.as_ref().unwrap_or(args);
+            let reads = Reads {
+                r1: local_args.r1.clone().expect("local assembly reads"),
+                r2: local_args.r2.clone().expect("local assembly reads"),
+            };
+            let (flagged, report) = mapping::tandem::assess(sequence, true, &reads)?;
+            append_tandem_rows(
+                &args.out.join("maximum_consensus.ambiguity.tsv"),
+                &reference.selected_name,
+                sequence.len(),
+                &flagged,
+            )?;
+            report
+        }
+        _ => json!({"status":"not_assessed","reason":"requires best-effort local assembly reads"}),
+    };
     report::write_ambiguity_tsv(&args.out.join("ambiguity.tsv"), &ambiguity)?;
     report::write_uncertainty_tsv(&args.out.join("uncertainty.tsv"), &called.uncertainty)?;
     report::write_base_votes_tsv(&args.out.join("base_votes.tsv"), &called.base_votes)?;
@@ -207,7 +227,7 @@ pub fn assemble(args: &MappingArgs) -> Result<bool> {
             "baseline_ambiguity_intervals":ambiguity.len(),"local_assembly":local.as_ref().map(|r|&r.report),
             "parameters":{"min_mapq":args.min_mapq,"min_baseq":args.min_baseq,"min_depth":args.min_depth,"min_alt_frac":min_indel_frac,"min_snp_frac":min_snp_frac,"min_indel_frac":min_indel_frac,"window":args.window,"max_records":args.max_records,"repeat_aware":true},
             "base_voting":{"method":"quality-weighted named fragments; overlapping mates counted once","weight":"min(baseQ,40) * min(MAPQ,60)","ordinary_snp_requires_strict_majority":true,"repeat_min_dominance":0.85,"repeat_max_entropy":0.8,"minimum_reported_minor_weighted_fraction":0.05,"mixed_sites":called.base_votes.len(),"called_mixed_sites":called.base_votes.iter().filter(|v| v.consensus != 'N').count(),"votes_file":"base_votes.tsv","mixed_sites_are_not_proof_of_heteroplasmy":true},
-            "subsampling":sampling_report,
+            "subsampling":sampling_report,"tandem_repeats":tandem_repeats,
             "records":stats.total_records,"filtered_records":stats.filtered_records,"overlapping_fragment_observations_collapsed":stats.overlapping_fragment_observations_collapsed,
             "coordinate_system":if args.best_effort{"pileup TSVs remain reference-based; structural_ambiguity.tsv matches strict candidate.fasta; maximum_consensus.ambiguity.tsv matches consensus.fasta and maximum_consensus.fasta"}else if local.is_some(){"pileup TSVs remain reference-based; structural_ambiguity.tsv is in candidate.fasta coordinates; see local_assembly/report.json for replacement coordinates"}else{"reference coordinates before accepted indels; TSV positions always reference-based"},
             "circularity_verified":false,"limitations":if local.is_some(){vec!["pileup reports describe the baseline; structural replacements are recorded separately","local reference-guided assembly does not certify whole-genome circularity","BAM and matching paired FASTQ required"]}else{vec!["uses existing BAM mappings; does not align FASTQ","no reference-filled N calls or structural repair","BAM accepted; CRAM and remote retrieval are outside this standalone version"]}
@@ -225,4 +245,29 @@ pub fn assemble(args: &MappingArgs) -> Result<bool> {
         )?;
     }
     Ok(consensus_written)
+}
+
+/// Append one row per flagged block, split at the origin of the circular consensus.
+fn append_tandem_rows(
+    path: &Path,
+    contig: &str,
+    length: usize,
+    flagged: &[(usize, mapping::tandem::Block, &str)],
+) -> Result<()> {
+    let mut file = fs::OpenOptions::new().append(true).open(path)?;
+    for (index, block, reason) in flagged {
+        let segments = if block.end <= length {
+            vec![(block.start + 1, block.end)]
+        } else {
+            vec![(block.start + 1, length), (1, block.end - length)]
+        };
+        for (start, end) in segments {
+            writeln!(
+                file,
+                "{contig}\t{start}\t{end}\ttandem_repeat_{}\t{reason}\t0",
+                index + 1
+            )?;
+        }
+    }
+    Ok(())
 }

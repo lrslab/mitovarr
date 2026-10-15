@@ -73,6 +73,9 @@ bases and is null for an entirely ambiguous interval. `sequence_origin` is
 `fixed_span_graph_fill` overlapping the interval; it is then
 `fixed_span_graph_fill`, meaning the bases were filled from sample-graph walks at
 the existing (reference-guided) span and the NCR length was not measured.
+A mapping `tandem_repeat_length_unmeasured` (or `_conflict`) row overlapping an
+NCR sets its locus `evidence_status` instead; the mapping `report.json`
+`tandem_repeats` entry gives the read-derived lower bound for the repeat gap.
 Positional annotation does not establish sequence ancestry, regulatory function,
 repeat copy number or a read-supported structural variant.
 
