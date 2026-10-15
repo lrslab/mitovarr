@@ -169,7 +169,7 @@ mitovarr assemble-mapping \
 
 Ordinary SNP calls require a strict quality-weighted fragment majority (`--min-snp-frac 0.5`); ties remain N. Indels use `--min-indel-frac 0.7`. Default minimum MAPQ, baseQ and depth are 20, 0 and 10; baseQ 0 disables hard base-quality filtering. Overlapping mates count once, repeat-aware rules are always enabled, and unsupported bases remain N rather than being filled from the reference. The legacy `--min-alt-frac` sets both fractions and conflicts with explicitly setting either separate option.
 
-`base_votes.tsv` reports retained mixed sites meeting `--min-depth` where at least two A/C/G/T alleles each contribute at least 5% of total base weight. Base weights are `min(baseQ,40) * min(MAPQ,60)`. Mixed-site evidence, including a `heteroplasmy` flag in `variants.tsv`, does not establish biological heteroplasmy.
+`base_votes.tsv` reports retained mixed sites meeting `--min-depth` where at least two A/C/G/T alleles each contribute at least 5% of total base weight. Base weights are `min(baseQ,40) * min(MAPQ,60)`. Mixed-site evidence, including a `heteroplasmy` flag in `variants.tsv`, does not establish biological heteroplasmy. `report.json.base_voting.mixed_sample` bins non-repeat mixed sites by their second-largest weighted allele fraction and reports `mixed_sample_signal` when at least 10 sites have a minor allele of at least 0.2 (a second haplotype, contamination or mismapped divergent reads); de novo reports its own reference-free signal (see [de novo mixed-sample signal](docs/de_novo.md#mixed-sample-signal)).
 
 For a fast consensus and uncertainty report, supply matching paired FASTQ:
 

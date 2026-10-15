@@ -62,6 +62,21 @@ Permissive collapse does not establish structural uniqueness. If a removed bubbl
 
 Tip/bubble simplification and local weak-edge disconnection are established assembly ideas; this package implements its own bounded versions. Whole-path coverage comparison is also used by the [SPAdes bulge remover](https://github.com/ablab/spades/blob/v4.3.0/src/common/modules/simplification/bulge_remover.hpp); our implementation retains an explicit sequence-edit bound and does not import or invoke SPAdes code. See [Zerbino & Birney, 2008](https://doi.org/10.1101/gr.074492.107) and [Nurk et al., 2017](https://pmc.ncbi.nlm.nih.gov/articles/PMC5411777/).
 
+### Mixed-sample signal
+
+`report.json.mixed_sample` counts allele bubbles left after cleanup: pairs of
+non-circular unitigs between the same graph nodes whose lengths differ by at
+most three bases, counted once per strand pair, with the minor branch's share
+of mean k-mer support. Cleanup removes weak branches as errors, so pairs whose
+minor share is at least 0.2 indicate a well-supported second haplotype;
+`status` becomes `mixed_sample_signal` at three or more such bubbles and
+`minor_fractions` lists every pair. Such a sample can fragment the graph and
+leave a short primary (e.g. 1.9 kb) without any assembler fault. This is a
+signal, not proof of heteroplasmy or contamination: minor alleles cleaned as
+errors and minor sequences too divergent to share k-mers are not counted. The
+reference-guided mapping report has a separate pileup-based summary
+(`base_voting.mixed_sample`).
+
 ## Read-supported repeat traversal
 
 For a repeat unitig with multiple entrances and exits, the assembler scans the assembly reads for exact paths covering the entire unitig and at least five consecutive k-mers in each flanking unitig. Each named fragment contributes at most once to a route, even if both mates span it. This exact-threading stage does not use mate distance; a separate paired-path comparison follows it.

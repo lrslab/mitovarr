@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Report mixed-sample signals without changing sequences. De novo
+  `report.json.mixed_sample` counts balanced allele bubbles left after cleanup
+  (parallel unitigs, lengths within 3 bases, minor share >= 0.2; signal at 3).
+  Mapping `base_voting.mixed_sample` bins non-repeat mixed sites by minor
+  weighted allele fraction (signal at 10 sites with minor >= 0.2). Both are
+  signals, not proof of heteroplasmy or contamination.
+
 - Label tandem repeats in the best-effort mapping consensus whose length reads
   do not measure. Blocks with unique flanking anchors are measured only by reads
   carrying both anchors; others get a `tandem_repeat_length_unmeasured` (or

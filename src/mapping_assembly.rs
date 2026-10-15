@@ -226,7 +226,7 @@ pub fn assemble(args: &MappingArgs) -> Result<bool> {
             "ambiguous_bases":sequence.iter().filter(|b| **b == b'N').count(),"ambiguity_intervals":remaining_ambiguity,
             "baseline_ambiguity_intervals":ambiguity.len(),"local_assembly":local.as_ref().map(|r|&r.report),
             "parameters":{"min_mapq":args.min_mapq,"min_baseq":args.min_baseq,"min_depth":args.min_depth,"min_alt_frac":min_indel_frac,"min_snp_frac":min_snp_frac,"min_indel_frac":min_indel_frac,"window":args.window,"max_records":args.max_records,"repeat_aware":true},
-            "base_voting":{"method":"quality-weighted named fragments; overlapping mates counted once","weight":"min(baseQ,40) * min(MAPQ,60)","ordinary_snp_requires_strict_majority":true,"repeat_min_dominance":0.85,"repeat_max_entropy":0.8,"minimum_reported_minor_weighted_fraction":0.05,"mixed_sites":called.base_votes.len(),"called_mixed_sites":called.base_votes.iter().filter(|v| v.consensus != 'N').count(),"votes_file":"base_votes.tsv","mixed_sites_are_not_proof_of_heteroplasmy":true},
+            "base_voting":{"method":"quality-weighted named fragments; overlapping mates counted once","weight":"min(baseQ,40) * min(MAPQ,60)","ordinary_snp_requires_strict_majority":true,"repeat_min_dominance":0.85,"repeat_max_entropy":0.8,"minimum_reported_minor_weighted_fraction":0.05,"mixed_sites":called.base_votes.len(),"called_mixed_sites":called.base_votes.iter().filter(|v| v.consensus != 'N').count(),"votes_file":"base_votes.tsv","mixed_sites_are_not_proof_of_heteroplasmy":true,"mixed_sample":mixed_sample(&called.base_votes)},
             "subsampling":sampling_report,"tandem_repeats":tandem_repeats,
             "records":stats.total_records,"filtered_records":stats.filtered_records,"overlapping_fragment_observations_collapsed":stats.overlapping_fragment_observations_collapsed,
             "coordinate_system":if args.best_effort{"pileup TSVs remain reference-based; structural_ambiguity.tsv matches strict candidate.fasta; maximum_consensus.ambiguity.tsv matches consensus.fasta and maximum_consensus.fasta"}else if local.is_some(){"pileup TSVs remain reference-based; structural_ambiguity.tsv is in candidate.fasta coordinates; see local_assembly/report.json for replacement coordinates"}else{"reference coordinates before accepted indels; TSV positions always reference-based"},
@@ -270,4 +270,85 @@ fn append_tandem_rows(
         }
     }
     Ok(())
+}
+
+const MIXED_MIN_MINOR: f64 = 0.2;
+const MIXED_MIN_SITES: usize = 10;
+
+/// Minor-allele fractions of non-repeat mixed sites. Many sites with a substantial
+/// second allele signal a mixed sample; this is not proof of heteroplasmy.
+fn mixed_sample(votes: &[crate::consensus::BaseVoteRecord]) -> serde_json::Value {
+    let mut bins = [0usize; 4];
+    let mut repeat = 0;
+    for vote in votes {
+        if vote.is_repeat_ambiguous {
+            repeat += 1;
+            continue;
+        }
+        let mut called: Vec<f64> = vote
+            .alleles
+            .iter()
+            .filter(|a| "ACGT".contains(a.base))
+            .map(|a| a.weighted_fraction)
+            .collect();
+        called.sort_by(|a, b| b.total_cmp(a));
+        let minor = called.get(1).copied().unwrap_or(0.0);
+        let bin = match minor {
+            m if m >= 0.3 => 3,
+            m if m >= MIXED_MIN_MINOR => 2,
+            m if m >= 0.1 => 1,
+            m if m >= 0.05 => 0,
+            _ => continue,
+        };
+        bins[bin] += 1;
+    }
+    let substantial = bins[2] + bins[3];
+    json!({"method":"second-largest weighted A/C/G/T fraction at mixed sites, repeat-ambiguous sites excluded",
+        "sites_by_minor_fraction":{"0.05-0.10":bins[0],"0.10-0.20":bins[1],"0.20-0.30":bins[2],"0.30+":bins[3]},
+        "repeat_ambiguous_sites_excluded":repeat,"sites_with_minor_at_least_0.2":substantial,"signal_threshold":MIXED_MIN_SITES,
+        "status":if substantial >= MIXED_MIN_SITES {"mixed_sample_signal"} else {"not_detected"},
+        "limitation":"signal, not proof of heteroplasmy or contamination; mismapped divergent reads also create mixed sites"})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::consensus::{AlleleVote, BaseVoteRecord};
+
+    fn vote(minor: f64, repeat: bool) -> BaseVoteRecord {
+        let allele = |base, fraction: f64| AlleleVote {
+            base,
+            depth: (fraction * 100.0) as u32,
+            fraction,
+            weighted_fraction: fraction,
+        };
+        BaseVoteRecord {
+            pos: 1,
+            reference: 'A',
+            consensus: 'A',
+            depth: 100,
+            alleles: vec![
+                allele('A', 1.0 - minor),
+                allele('G', minor),
+                allele('N', 0.0),
+            ],
+            is_repeat_ambiguous: repeat,
+        }
+    }
+
+    #[test]
+    fn many_substantial_minor_alleles_signal_a_mixed_sample() {
+        let mut votes: Vec<_> = (0..9).map(|_| vote(0.35, false)).collect();
+        votes.extend([vote(0.07, false), vote(0.15, false), vote(0.25, true)]);
+        let report = mixed_sample(&votes);
+        assert_eq!(report["sites_by_minor_fraction"]["0.30+"], 9);
+        assert_eq!(report["sites_by_minor_fraction"]["0.05-0.10"], 1);
+        assert_eq!(report["sites_by_minor_fraction"]["0.10-0.20"], 1);
+        assert_eq!(report["repeat_ambiguous_sites_excluded"], 1);
+        assert_eq!(report["status"], "not_detected");
+        votes.push(vote(0.22, false));
+        let report = mixed_sample(&votes);
+        assert_eq!(report["sites_with_minor_at_least_0.2"], 10);
+        assert_eq!(report["status"], "mixed_sample_signal");
+    }
 }

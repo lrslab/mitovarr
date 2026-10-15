@@ -676,6 +676,57 @@ fn simplify_retaining_links(
     (unitigs, branches, stats, alternatives)
 }
 
+const MIXED_MIN_MINOR: f64 = 0.2;
+const MIXED_MIN_BUBBLES: usize = 3;
+
+/// Minor-branch support fraction of each balanced allele bubble left after
+/// cleanup: two non-circular unitigs between the same nodes, lengths within three
+/// bases, counted once per strand pair. Cleanup keeps such pairs only when both
+/// branches are well supported, so several of them signal a second haplotype.
+fn balanced_bubbles(unitigs: &[Unitig], k: usize) -> Vec<f64> {
+    let mut ends = std::collections::BTreeMap::<_, Vec<usize>>::new();
+    for (id, u) in unitigs.iter().enumerate() {
+        if !u.circular && u.from != u.to {
+            ends.entry((u.from, u.to)).or_default().push(id);
+        }
+    }
+    let mut minors = Vec::new();
+    for ((from, to), mut ids) in ends {
+        let twin = (
+            graph_kmer::reverse_code(to, k - 1),
+            graph_kmer::reverse_code(from, k - 1),
+        );
+        // One strand of each pair: the lexicographically smaller endpoint key.
+        if ids.len() < 2 || twin < (from, to) {
+            continue;
+        }
+        ids.sort_by(|&a, &b| {
+            unitigs[b]
+                .mean_count
+                .total_cmp(&unitigs[a].mean_count)
+                .then(unitigs[a].sequence.cmp(&unitigs[b].sequence))
+        });
+        let (major, minor) = (&unitigs[ids[0]], &unitigs[ids[1]]);
+        if major.sequence.len().abs_diff(minor.sequence.len()) <= 3 {
+            minors.push(minor.mean_count / (major.mean_count + minor.mean_count));
+        }
+    }
+    minors.sort_by(f64::total_cmp);
+    minors
+}
+
+/// A reference-free mixed-sample signal; not proof of heteroplasmy. Minor
+/// sequences cleaned as errors or too divergent to share k-mers are not counted.
+fn mixed_sample(unitigs: &[Unitig], k: usize) -> Value {
+    let minors = balanced_bubbles(unitigs, k);
+    let balanced = minors.iter().filter(|&&m| m >= MIXED_MIN_MINOR).count();
+    json!({"method":"allele bubbles left after cleanup: parallel non-circular unitigs between the same nodes, lengths within 3 bases, one per strand pair",
+        "balanced_allele_bubbles":balanced,"minimum_minor_fraction":MIXED_MIN_MINOR,"signal_threshold":MIXED_MIN_BUBBLES,
+        "minor_fractions":minors.iter().map(|m| (m * 1000.0).round() / 1000.0).collect::<Vec<_>>(),
+        "status":if balanced >= MIXED_MIN_BUBBLES {"mixed_sample_signal"} else {"not_detected"},
+        "limitation":"signal, not proof of heteroplasmy or contamination; low-level minor alleles removed as errors and divergent minor sequences are not counted; a mixed sample can fragment the graph and shorten the primary"})
+}
+
 fn write_graph(out: &Path, unitigs: &[Unitig], k: usize) -> Result<()> {
     let mut writer = BufWriter::new(File::create(out.join("assembly_graph.gfa"))?);
     writeln!(writer, "H\tVN:Z:1.0")?;
@@ -1000,6 +1051,7 @@ pub fn assemble(
     };
     simplification["cleaned_canonical_kmers"] = json!(edges.len() / 2);
     simplification["cleaned_directed_branch_nodes"] = json!(branches);
+    let mixed_sample = mixed_sample(&unitigs, settings.k);
     info!(
         raw_branches = simplification["raw_directed_branch_nodes"].as_u64(),
         branches, "simplified sample-only graph"
@@ -1172,7 +1224,7 @@ pub fn assemble(
         "input_scope":if bam_baited {"mt-bam-extracted"} else {"original-paired-fastq"},"validation_scope":if bam_baited {"mt-bam-extracted"} else {"original-complete-paired-fastq"},
         "assembly_r1":reads.r1.canonicalize()?,"assembly_r2":reads.r2.canonicalize()?,"assembly_reads":scan,"subsampling":subsampling,
         "distinct_kmers":counts.len(),"retained_canonical_kmers":edges.len()/2,"minimum_retained_pair_count":edges.iter().map(|e|e.count).min(),"directed_branch_nodes":branches,
-        "graph_simplification":simplification,
+        "graph_simplification":simplification,"mixed_sample":mixed_sample,
         "read_threading":read_threading,
         "paired_path_resolution":path_resolution.report,
         "primary":primary,
@@ -1526,6 +1578,29 @@ mod cleanup_tests {
             found > 0 && capped > 0 && exhausted > 0,
             "{found} {capped} {exhausted}"
         );
+    }
+
+    #[test]
+    fn balanced_haplotypes_leave_counted_allele_bubbles_but_errors_do_not() {
+        let k = 21;
+        let major = dna(600);
+        let mut minor = major.clone();
+        for at in [100, 250, 400] {
+            minor[at] = if minor[at] == b'A' { b'C' } else { b'A' };
+        }
+        let cleaned = |minor_count: u32| {
+            let (mut edges, _, _) = graph(&counts(&[(&major, 60), (&minor, minor_count)], k), k, 3);
+            simplify(&mut edges, k, 0.2, 0.49).0
+        };
+        let unitigs = cleaned(40);
+        let minors = balanced_bubbles(&unitigs, k);
+        assert_eq!(minors.len(), 3, "{minors:?}");
+        assert!(minors.iter().all(|&m| (m - 0.4).abs() < 0.01), "{minors:?}");
+        assert_eq!(mixed_sample(&unitigs, k)["status"], "mixed_sample_signal");
+        // A weak minor sequence is cleaned like sequencing error and not counted.
+        let unitigs = cleaned(5);
+        assert!(balanced_bubbles(&unitigs, k).is_empty());
+        assert_eq!(mixed_sample(&unitigs, k)["status"], "not_detected");
     }
 
     #[test]
