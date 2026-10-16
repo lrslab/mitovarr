@@ -55,14 +55,28 @@ From the repository root:
 ```bash
 cargo fmt --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --release --all-features
+RUST_BACKTRACE=1 cargo test --locked --release --all-features -- --test-threads=1 --nocapture
 cargo package --locked
 ```
 
 `.github/workflows/ci.yml` runs formatting, Clippy and the release-profile test
 suite on all three native runners, and verifies the standalone Cargo package
-on Linux x86_64. It runs on branch pushes, pull requests and manual dispatch,
-and is called again by the release workflow for the tagged commit.
+on Linux x86_64. Test cases run sequentially with live diagnostics and panic
+backtraces; scoring-worker tests retain their internal concurrency. This avoids
+overlapping assembly fixtures and identifies the active test if a process aborts.
+On macOS failures, CI also waits briefly for system crash reports, prints any
+matching test reports in the job log and saves their full contents as the
+`macos-test-crash-reports` artifact. Absence of a crash report does not establish
+the abort's cause.
+CI runs on branch pushes, pull requests and manual dispatch, and is called again
+by the release workflow for the tagged commit.
+
+For Linux x86_64, use `musl-gcc` to compile C dependencies and `gcc` as the
+Rust linker (`CC_x86_64_unknown_linux_musl=musl-gcc` and
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=gcc`). Rust 1.90's musl target
+links its bundled static runtime by default. Ubuntu 22.04's `musl-gcc` wrapper
+does not correctly handle the `-static-pie` link; do not use it as the final
+linker. Keep the release's ELF linkage check enabled.
 
 To rehearse the archive on an Apple Silicon Mac:
 
@@ -102,8 +116,9 @@ git push origin "v$version"
 `.github/workflows/release.yml` requires exactly `v<Cargo package version>`.
 It validates the dated changelog, waits for reusable CI, then builds, packages
 and smoke-tests all three targets. Linux x86_64 additionally checks that the
-executable has no dynamic loader. Only after all targets succeed does the
-publish job create the GitHub Release and attach the three archives. Release
+executable has neither a dynamic loader nor shared-library dependencies. Only
+after all targets succeed does the publish job create the GitHub Release and
+attach the three archives. Release
 notes contain the version's changelog followed by GitHub-generated notes.
 Versions such as `0.2.0-rc.1` are marked as prereleases.
 

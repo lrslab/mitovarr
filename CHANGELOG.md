@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-10-16
+
+- Fix the Linux x86_64 release build: use GCC to link Rust's bundled static
+  musl runtime while retaining `musl-gcc` for C dependencies. Ubuntu 22.04's
+  `musl-gcc` wrapper mishandles Rust's `-static-pie` link, leaving an unwanted
+  ELF interpreter. The release gate now prints ELF linkage details and rejects
+  both dynamic interpreters and shared-library dependencies.
+- Run CI tests one at a time with live output and Rust panic backtraces, so an
+  aborted test is identifiable and fixtures do not overlap. Tests of internal
+  scoring workers retain their concurrency. On macOS failures, collect available
+  test crash reports in the job log and a downloadable artifact. The macOS
+  `mapping_local` SIGABRT seen in one v0.2.0 CI run was absent from the same commit's release verification
+  and local reruns; its cause has not been established.
+- Assembly algorithms, input scope and output formats are unchanged.
+
 ## 0.2.0 - 2026-10-16
 
 ### Assembly and evidence reports

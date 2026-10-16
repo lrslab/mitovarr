@@ -86,7 +86,9 @@ jobs:
       TARGET: ${{ matrix.target }}
       MACOSX_DEPLOYMENT_TARGET: "11.0"
       CC_x86_64_unknown_linux_musl: musl-gcc
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      # Compile ring against musl, but link Rust's bundled static musl runtime
+      # with GCC: Ubuntu 22.04's musl-gcc specs mishandle -static-pie.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: gcc
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -107,9 +109,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          readelf -l "target/$TARGET/release/mitovarr" > "$RUNNER_TEMP/program-headers.txt"
-          if grep -q INTERP "$RUNNER_TEMP/program-headers.txt"; then
-            echo "The musl binary unexpectedly requires a dynamic loader." >&2
+          readelf -l -d "target/$TARGET/release/mitovarr" | tee "$RUNNER_TEMP/elf-linkage.txt"
+          if grep -Eq 'INTERP|\(NEEDED\)' "$RUNNER_TEMP/elf-linkage.txt"; then
+            echo "The musl binary unexpectedly requires a dynamic loader or shared library." >&2
             exit 1
           fi
       - name: Package binary and documentation
