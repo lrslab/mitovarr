@@ -597,7 +597,82 @@ pub(super) struct Resolution {
     pub candidates: Vec<Candidate>,
     pub primary_candidates: Vec<primary::Primary>,
     pub supported_cycles: BTreeSet<Vec<u8>>,
+    pub structural_alternatives: Vec<Value>,
     pub report: Value,
+}
+
+const STRUCTURAL_MIN_SHARE: f64 = 0.2;
+const STRUCTURAL_MIN_BASES: usize = 50;
+const STRUCTURAL_MAX_STEPS: usize = 6;
+
+/// Supported structural alternatives for the mixed-sample report: from one source,
+/// one route's target leads back through strict joins to another supported route's
+/// target. The bypassed segments suggest a deletion (or duplication) carried by
+/// part of the molecules. Primary and final selection never use this.
+fn structural_alternatives(
+    loci: &[Locus],
+    graph: &PathGraph,
+    overlap: usize,
+    settings: &GraphSettings,
+) -> Vec<Value> {
+    let strict: HashMap<usize, &Route> = loci
+        .iter()
+        .filter_map(|l| l.selected.map(|s| (l.from, &l.routes[s])))
+        .filter(|(from, route)| *from != route.to)
+        .collect();
+    let bases = |id: usize| graph.segments[id].sequence.len().saturating_sub(overlap);
+    // Keyed by bypassed length: both strand views report the same detour once.
+    let mut events = BTreeMap::<usize, Value>::new();
+    for l in loci.iter().filter(|l| l.spanning.len() == l.routes.len()) {
+        for (a, detour) in l.routes.iter().enumerate() {
+            for (b, direct) in l.routes.iter().enumerate() {
+                if a == b
+                    || detour.to == direct.to
+                    || detour.to == l.from
+                    || direct.to == l.from
+                    || detour.circle_length.is_some()
+                    || direct.circle_length.is_some()
+                {
+                    continue;
+                }
+                let (via, skip) = (l.spanning[a], l.spanning[b]);
+                let minor = via.min(skip);
+                if minor < settings.min_junction_fragments
+                    || f64::from(minor) < STRUCTURAL_MIN_SHARE * f64::from(via + skip)
+                {
+                    continue;
+                }
+                let mut length: usize =
+                    detour.nodes.iter().map(|&n| bases(n)).sum::<usize>() + bases(detour.to);
+                let mut node = detour.to;
+                for _ in 0..STRUCTURAL_MAX_STEPS {
+                    let Some(route) = strict.get(&node) else {
+                        break;
+                    };
+                    // A strict join can traverse non-anchor segments before
+                    // reaching its target; include them even on the final join.
+                    length += route.nodes.iter().map(|&n| bases(n)).sum::<usize>();
+                    let next = route.to;
+                    if next == direct.to {
+                        let bypassed = length
+                            .saturating_sub(direct.nodes.iter().map(|&n| bases(n)).sum::<usize>());
+                        if bypassed >= STRUCTURAL_MIN_BASES {
+                            events.entry(bypassed).or_insert_with(|| {
+                                json!({"source_segment":l.from+1,"detour_target_segment":detour.to+1,
+                                    "direct_target_segment":direct.to+1,"bypassed_bases":bypassed,
+                                    "detour_spanning_fragments":via,"direct_spanning_fragments":skip,
+                                    "minor_share":(f64::from(minor) / f64::from(via + skip) * 1000.0).round() / 1000.0})
+                            });
+                        }
+                        break;
+                    }
+                    length += bases(next);
+                    node = next;
+                }
+            }
+        }
+    }
+    events.into_values().collect()
 }
 
 fn path_anchors(graph: &PathGraph, k: usize, seeds: &seeds::Seeds) -> HashSet<usize> {
@@ -1002,8 +1077,10 @@ pub(super) fn resolve(
             }
         }
     }
+    let structural_alternatives = structural_alternatives(&loci, graph, overlap, settings);
     Ok(Resolution {
         supported_cycles,
+        structural_alternatives,
         primary_candidates,
         candidates: candidates
             .into_iter()
@@ -1356,6 +1433,101 @@ mod tests {
             -12.0
         );
     }
+    #[test]
+    fn supported_detour_back_to_a_direct_target_is_a_structural_alternative() {
+        let segment = |n| Segment {
+            sequence: vec![b'A'; n],
+            circular: false,
+        };
+        // Source 0 reaches target 2 directly or through a 500-base detour 1.
+        let graph = PathGraph {
+            segments: vec![segment(300), segment(500), segment(300)],
+            outgoing: vec![vec![1, 2], vec![2], vec![]],
+        };
+        let anchors = HashSet::from([0, 1, 2]);
+        let mut loci = vec![
+            enumerate(&graph, 0, &anchors, 62, 100_000, 300, 100),
+            enumerate(&graph, 1, &anchors, 62, 100_000, 300, 100),
+        ];
+        let to_detour = loci[0].routes.iter().position(|r| r.to == 1).unwrap();
+        let to_target = loci[0].routes.iter().position(|r| r.to == 2).unwrap();
+        let back = loci[1].routes.iter().position(|r| r.to == 2);
+        loci[1].selected = back;
+        let settings = GraphSettings {
+            coverage_layout: false,
+            multi_k_layout: false,
+            k: 63,
+            min_kmer_count: 3,
+            max_error_fraction: 0.2,
+            max_bubble_fraction: 0.49,
+            min_depth: 10,
+            min_junction_fragments: 3,
+            max_validation_pairs: 10000,
+        };
+        let detect = |via: u32, skip: u32, loci: &mut Vec<Locus>| {
+            loci[0].spanning[to_detour] = via;
+            loci[0].spanning[to_target] = skip;
+            structural_alternatives(loci, &graph, 62, &settings)
+        };
+        let events = detect(20, 25, &mut loci);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0]["bypassed_bases"], 500 - 62);
+        assert_eq!(events[0]["detour_spanning_fragments"], 20);
+        assert_eq!(events[0]["direct_spanning_fragments"], 25);
+        // A weak minor route or missing strict return is not a mixture signal.
+        assert!(detect(2, 25, &mut loci).is_empty());
+        assert!(detect(4, 25, &mut loci).is_empty());
+        loci[1].selected = None;
+        assert!(detect(20, 25, &mut loci).is_empty());
+    }
+
+    #[test]
+    fn structural_bypass_length_includes_intermediate_segments_of_strict_joins() {
+        let segment = |n| Segment {
+            sequence: vec![b'A'; n],
+            circular: false,
+        };
+        // 0 -> 1 -> 3 -> 2 versus 0 -> 4 -> 2. Only 0, 1 and 2 are anchors:
+        // the strict return from 1 to 2 includes intermediate segment 3.
+        let graph = PathGraph {
+            segments: vec![
+                segment(300),
+                segment(500),
+                segment(300),
+                segment(200),
+                segment(100),
+            ],
+            outgoing: vec![vec![1, 4], vec![3], vec![], vec![2], vec![2]],
+        };
+        let anchors = HashSet::from([0, 1, 2]);
+        let mut loci = vec![
+            enumerate(&graph, 0, &anchors, 62, 100_000, 300, 100),
+            enumerate(&graph, 1, &anchors, 62, 100_000, 300, 100),
+        ];
+        let detour = loci[0].routes.iter().position(|r| r.to == 1).unwrap();
+        let direct = loci[0].routes.iter().position(|r| r.to == 2).unwrap();
+        loci[0].spanning[detour] = 20;
+        loci[0].spanning[direct] = 25;
+        loci[1].selected = loci[1].routes.iter().position(|r| r.to == 2);
+        let settings = GraphSettings {
+            coverage_layout: false,
+            multi_k_layout: false,
+            k: 63,
+            min_kmer_count: 3,
+            max_error_fraction: 0.2,
+            max_bubble_fraction: 0.49,
+            min_depth: 10,
+            min_junction_fragments: 3,
+            max_validation_pairs: 10000,
+        };
+        let events = structural_alternatives(&loci, &graph, 62, &settings);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(
+            events[0]["bypassed_bases"],
+            (500 - 62) + (200 - 62) - (100 - 62)
+        );
+    }
+
     #[test]
     fn repeat_revisits_are_candidates_and_length_bound_is_not_completion() {
         let segment = |n| Segment {

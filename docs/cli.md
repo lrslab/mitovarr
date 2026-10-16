@@ -1,6 +1,6 @@
 # mitovarr CLI reference
 
-Captured from `mitovarr 0.1.0` with unreleased fixes on 2026-10-12. Assembly commands are grouped into de novo assembly (`assemble-baited`, `assemble-seeded`) and mapping assembly (`assemble-mapping`). Current examples are in the [README](../README.md); method details are in the [documentation index](README.md). Regenerate these help sections after changing CLI options or defaults.
+Captured from `mitovarr 0.2.0` on 2026-10-16. Assembly commands are grouped into de novo assembly (`assemble-baited`, `assemble-seeded`) and mapping assembly (`assemble-mapping`). Current examples are in the [README](../README.md); method details are in the [documentation index](README.md). Regenerate these help sections after changing CLI options or defaults.
 
 ## Top-level commands
 

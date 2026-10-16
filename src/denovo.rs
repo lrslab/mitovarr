@@ -717,13 +717,18 @@ fn balanced_bubbles(unitigs: &[Unitig], k: usize) -> Vec<f64> {
 
 /// A reference-free mixed-sample signal; not proof of heteroplasmy. Minor
 /// sequences cleaned as errors or too divergent to share k-mers are not counted.
-fn mixed_sample(unitigs: &[Unitig], k: usize) -> Value {
+/// Supported structural alternatives (e.g. a deletion in part of the molecules)
+/// come from path resolution.
+fn mixed_sample(unitigs: &[Unitig], k: usize, structural: &[Value]) -> Value {
     let minors = balanced_bubbles(unitigs, k);
     let balanced = minors.iter().filter(|&&m| m >= MIXED_MIN_MINOR).count();
+    let signal = balanced >= MIXED_MIN_BUBBLES || !structural.is_empty();
     json!({"method":"allele bubbles left after cleanup: parallel non-circular unitigs between the same nodes, lengths within 3 bases, one per strand pair",
         "balanced_allele_bubbles":balanced,"minimum_minor_fraction":MIXED_MIN_MINOR,"signal_threshold":MIXED_MIN_BUBBLES,
         "minor_fractions":minors.iter().map(|m| (m * 1000.0).round() / 1000.0).collect::<Vec<_>>(),
-        "status":if balanced >= MIXED_MIN_BUBBLES {"mixed_sample_signal"} else {"not_detected"},
+        "structural_alternatives":structural,
+        "structural_method":"two routes from one path source, each with >= the junction fragment minimum and the minor >= 0.2 of both; one route's target returns to the other's target through at most six strict joins, including their intermediate segments; bypassed bases >= 50; one per bypassed length",
+        "status":if signal {"mixed_sample_signal"} else {"not_detected"},
         "limitation":"signal, not proof of heteroplasmy or contamination; low-level minor alleles removed as errors and divergent minor sequences are not counted; a mixed sample can fragment the graph and shorten the primary"})
 }
 
@@ -1051,7 +1056,6 @@ pub fn assemble(
     };
     simplification["cleaned_canonical_kmers"] = json!(edges.len() / 2);
     simplification["cleaned_directed_branch_nodes"] = json!(branches);
-    let mixed_sample = mixed_sample(&unitigs, settings.k);
     info!(
         raw_branches = simplification["raw_directed_branch_nodes"].as_u64(),
         branches, "simplified sample-only graph"
@@ -1068,6 +1072,11 @@ pub fn assemble(
     let unresolved_branches = threaded.unresolved;
     let read_threading = threaded.report;
     let mut path_resolution = paths::resolve(&threaded.graph, reads, out, settings, limits)?;
+    let mixed_sample = mixed_sample(
+        &unitigs,
+        settings.k,
+        &path_resolution.structural_alternatives,
+    );
     for primary in &mut path_resolution.primary_candidates {
         let affected = bubble_components.affected(&primary.candidate, settings.k);
         if !affected.is_empty() {
@@ -1596,11 +1605,14 @@ mod cleanup_tests {
         let minors = balanced_bubbles(&unitigs, k);
         assert_eq!(minors.len(), 3, "{minors:?}");
         assert!(minors.iter().all(|&m| (m - 0.4).abs() < 0.01), "{minors:?}");
-        assert_eq!(mixed_sample(&unitigs, k)["status"], "mixed_sample_signal");
+        assert_eq!(
+            mixed_sample(&unitigs, k, &[])["status"],
+            "mixed_sample_signal"
+        );
         // A weak minor sequence is cleaned like sequencing error and not counted.
         let unitigs = cleaned(5);
         assert!(balanced_bubbles(&unitigs, k).is_empty());
-        assert_eq!(mixed_sample(&unitigs, k)["status"], "not_detected");
+        assert_eq!(mixed_sample(&unitigs, k, &[])["status"], "not_detected");
     }
 
     #[test]

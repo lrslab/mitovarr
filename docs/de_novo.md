@@ -68,14 +68,31 @@ Tip/bubble simplification and local weak-edge disconnection are established asse
 non-circular unitigs between the same graph nodes whose lengths differ by at
 most three bases, counted once per strand pair, with the minor branch's share
 of mean k-mer support. Cleanup removes weak branches as errors, so pairs whose
-minor share is at least 0.2 indicate a well-supported second haplotype;
+minor share is at least 0.2 contribute to a mixed-sample signal;
 `status` becomes `mixed_sample_signal` at three or more such bubbles and
 `minor_fractions` lists every pair. Such a sample can fragment the graph and
-leave a short primary (e.g. 1.9 kb) without any assembler fault. This is a
+leave a short primary; the signal alone does not establish why a primary is short.
+
+`mixed_sample.structural_alternatives` adds supported large-indel mixtures from
+path resolution. From one path source, two routes each have at least the junction
+fragment minimum and the minor route at least 0.2 of both, and one route's target
+returns through at most six strict joins to the other route's target; the
+bypassed segments include intermediate segments on each strict join. The net
+extra length relative to the direct route
+(at least 50 bases, reported once per bypassed length) suggests a deletion or
+duplication carried by part of the molecules. Each entry lists the source,
+detour and direct target segments of `path_graph.gfa`, `bypassed_bases` and both
+spanning-fragment counts. Any such entry also sets `mixed_sample_signal`. The
+primary may follow either route (a supported deletion can be the majority
+molecule), and primary and final selection never use this signal. This is a
 signal, not proof of heteroplasmy or contamination: minor alleles cleaned as
 errors and minor sequences too divergent to share k-mers are not counted. The
 reference-guided mapping report has a separate pileup-based summary
 (`base_voting.mixed_sample`).
+
+This is a bounded diagnostic: longer return chains are not searched, and
+distinct events of the same bypassed length share one reported entry. A
+`not_detected` status does not rule out a mixture.
 
 ## Read-supported repeat traversal
 

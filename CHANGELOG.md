@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-10-16
+
+### Assembly and evidence reports
+
+- Report supported large-indel mixtures in de novo `mixed_sample.structural_alternatives`:
+  two routes from one path source (each >= the junction fragment minimum, minor
+  >= 0.2) where one route returns through strict joins to the other's target and
+  bypasses >= 50 bases. Count intermediate segments on every strict return
+  join. The return search covers at most six joins and reports one entry per
+  bypassed length. Any entry sets `mixed_sample_signal`; assembly output is
+  unchanged.
+
 - Report mixed-sample signals without changing sequences. De novo
   `report.json.mixed_sample` counts balanced allele bubbles left after cleanup
   (parallel unitigs, lengths within 3 bases, minor share >= 0.2; signal at 3).
@@ -22,26 +34,25 @@
   cloning and rescanning paths; the edit-distance check reuses two rows;
   compaction stores one outgoing run per node; removed k-mers use the k-mer
   hasher. The prior search and edit-distance kernels remain as differential
-  test oracles. All 27 cel/ctro panel strains are byte-identical; ctro QG5638
-  at an 8M cap drops from 800 to 207 s and cel NIC262 from 438 to 143 s.
+  test oracles, with differential checks against the original implementation.
 
 - Add opt-in de novo `--subsample` / `--subsample-seed`. Only after all complete
   pairs exceed `--max-kmers`, keep seeded fragment-name-priority pairs at 1/2,
   1/4 … 1/64 until the graph fits, write them as `subsampled.R*.fastq` and
   report the trigger, attempts and counts in `report.json.subsampling`. Final
   read validation still uses all pairs; without the option an overflow remains
-  an error.
+  an error. `--subsample-seed` defaults to 42; complete pairs remain the default.
 
 - Label each mapping maximum-consensus N run filled at the existing span as a
   `fixed_span_graph_fill` row in `maximum_consensus.ambiguity.tsv`. Annotation
   reports it as NCR `sequence_origin` and locus `evidence_status`, so a filled
-  NCR1 (e.g. the cel read-dropout core) is not read as a measured length.
+  NCR1 is not read as a measured length.
   Sequences and other outputs are unchanged.
 
 - Restore tRNA/rRNA termini clipped by one or two called sample bases next to a
-  supported aligned end, labelled `terminal_mismatch` (e.g. the CaenDR
-  *C. tropicalis* tRNA-Trp first base). Missing or ambiguous ends stay partial;
-  the tRNA-Pro rotation origin still requires an `aligned` 5' boundary.
+  supported aligned end, labelled `terminal_mismatch`. Missing or ambiguous
+  ends stay partial; the tRNA-Pro rotation origin still requires an `aligned`
+  5' boundary.
 
 - Recover supported partial primary paths across local alleles and competing
   reciprocal views. Report partial-primary allele evidence separately, retain
@@ -77,6 +88,23 @@
   2,000,000) and retain full-BAM partial consensus when local graph work reaches
   a resource cap. Report incomplete FASTQ validation explicitly; input errors
   and incomplete BAM pileups still fail.
+
+### Compatibility and remaining limits
+
+- Existing command names, FASTA/TSV formats and `mitovar-rust.*` schema IDs are
+  retained. JSON reports add subsampling, mixed-sample and tandem-repeat
+  evidence; uncertainty rows and RNA-boundary labels gain the statuses above.
+- Rust callers of `denovo::assemble` must supply the new optional subsampling
+  seed (`None` keeps all pairs). `AssemblyArgs` adds `subsample` and
+  `subsample_seed`; `MappingArgs` adds `local_max_kmers`.
+- Some de novo primary sequences remain truncated near NCR1 and can omit
+  adjacent genes. Low-quality graph branches, reciprocal allele conflicts and
+  weak-component cleanup can still shorten individual samples compared with
+  earlier versions. Assess genes independently with `annotate`; this release
+  does not guarantee a longer or more complete primary for every sample.
+- Unresolved repeat copy number, fixed-span fills and depth-fitted layouts
+  remain unverified. Mixed-sample reports are diagnostic signals, not a
+  heteroplasmy or contamination diagnosis; strict complete-output gates remain.
 
 ## 0.1.0 - 2026-10-10
 

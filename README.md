@@ -222,6 +222,15 @@ sequence's coordinates. `candidate.fasta` remains the strict comparison.
 The reference-guided span is a prior and does not prove repeat copy number.
 See the [maximum consensus method](docs/mapping_local_assembly.md#maximum-consensus-and-legacy-bridges).
 
+The matching uncertainty table labels N fills as `fixed_span_graph_fill` and
+tandem repeats without a matching read-spanned length as
+`tandem_repeat_length_unmeasured` or `tandem_repeat_length_conflict`.
+`report.json.tandem_repeats` retains spanning-read evidence and available gap
+lower bounds; pass the uncertainty table to `annotate --assembly-ambiguity`
+to carry these labels into NCR evidence. See
+[tandem-repeat length evidence](docs/mapping_local_assembly.md#tandem-repeat-length-evidence)
+and the [release changes and remaining limits](CHANGELOG.md).
+
 Add `--deep-validation --coverage-layout` to a local mapping run to compare bounded repeat layouts
 even when the strict search is incomplete. The shortlist retains the best
 R1 copy-depth fit, then represents repeat-count and traversal-order families
