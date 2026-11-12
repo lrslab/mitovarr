@@ -8,7 +8,7 @@ repository. The parent development directory is not part of the build.
 
 | Target | Build and test runner | Runtime baseline |
 | --- | --- | --- |
-| `aarch64-apple-darwin` | `macos-14` (Apple Silicon) | macOS 11+, ARM64 |
+| `aarch64-apple-darwin` | `macos-15` (Apple Silicon) | macOS 11+, ARM64 |
 | `x86_64-unknown-linux-musl` | `ubuntu-22.04` with `musl-tools` | Linux x86_64; static, no glibc dependency |
 | `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm` | Linux ARM64 with glibc 2.35+ |
 

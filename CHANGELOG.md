@@ -4,6 +4,9 @@
 
 ## 0.2.2 - 2026-11-02
 
+- Move macOS CI and release builds to the Apple Silicon `macos-15` runner
+  after GitHub retired `macos-14` on 2026-11-02. The binary deployment target
+  remains macOS 11.
 - De novo: collapse each homopolymer tract before graph cleanup to its
   best-supported run length and flank spelling, removing other lengths and the
   flank miscalls of reads that cross a long run. A minor above
