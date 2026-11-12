@@ -85,6 +85,12 @@ sequence. Genes overlapping that conservative flag remain `review_required`;
 it does not establish that every overlapping gene contains an error. Keep the
 flag until more specific evidence supports a narrower interval.
 
+`homopolymer_length_family` and `topology_inferred_repeat_pairing` are local
+de novo intervals. The first marks a homopolymer tract whose selected length and
+flanks are a consensus with supported alternatives; the second marks a repeat
+copy whose pairing was inferred from topology rather than spanning reads. Genes
+overlapping either remain `review_required`.
+
 The additive `records[].gene_quality` JSON object contains the same rows, expected
 model count, names in each class and a summary of `no_detected_gene_issues` or
 `gene_review_required`. `ncr1_required` is false. Missing or uncertain NCR1 alone

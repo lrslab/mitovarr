@@ -62,6 +62,62 @@ Permissive collapse does not establish structural uniqueness. If a removed bubbl
 
 Tip/bubble simplification and local weak-edge disconnection are established assembly ideas; this package implements its own bounded versions. Whole-path coverage comparison is also used by the [SPAdes bulge remover](https://github.com/ablab/spades/blob/v4.3.0/src/common/modules/simplification/bulge_remover.hpp); our implementation retains an explicit sequence-edit bound and does not import or invoke SPAdes code. See [Zerbino & Birney, 2008](https://doi.org/10.1101/gr.074492.107) and [Nurk et al., 2017](https://pmc.ncbi.nlm.nih.gov/articles/PMC5411777/).
 
+### Homopolymer tracts
+
+When k exceeds a run's length, each run length of one homopolymer tract has
+its own spanning k-mers. PCR or sequencing stutter and length heteroplasmy
+therefore form interleaved bubbles that the pairwise rule cannot collapse.
+Reads crossing a long run also often miscall the next few bases, always on the
+side each read reaches after the run. Their combinations can exceed the path
+search's candidate limit and leave the primary open at the tract.
+
+Before tip, bubble and weak-link cleanup, k-mers holding a run of at least six
+identical bases and 12 flank bases on each side are grouped by run base and exact
+flanks, spelled on the strand where the run is A or C. Each flank pair scores
+each run length by the mean pair-record support over its k-mers; the highest
+score selects its length. A weaker pair with one flank exact, at most three
+differing bases in the other and a run within six bases joins the strongest such
+pair as a flank variant. Above `--max-error-fraction` of that pair's support, it
+must also differ in at most three bases over the longest observed sequence on
+both sides: another haplotype usually differs beyond the flank, read-through
+miscalls do not. Each tract then takes the left and right flank with the most
+support summed over the other flank's spellings, because one miscalled flank can
+outscore the correct pair. A tract collapses only when its selected run has at
+least 10 bases and its consensus flanks show more than one run length; flank
+spellings without length variation, as in AT-rich arrays, stay. Its other lengths
+and flank variants, including the run k-mers that only longer lengths contain,
+are removed from both strands. A k-mer is kept when it spells the selected
+sequence of a collapsing tract it matches, or of a distinct tract above the
+error fraction of that support. A tract needs k at least 24 bases longer than
+its run.
+
+`graph_simplification.homopolymer_families` lists the flank pairs of each
+collapsing tract: flanks, selected length, mean support and k-mer count per
+length, largest minor-to-selected ratio, and whether the pair was removed as a
+flank variant. A minor length or flank variant above `--max-error-fraction` of
+the selected support is retained like a permissive bubble. It is listed in
+`retained_bubble_alternatives` and `bubble_alternatives.fasta` and vetoes final
+publication of its raw graph component (`supported_bubble_alternatives`).
+
+Support is judged within each tract. A lower-coverage tract cannot lose its
+minor-length evidence just because another tract shares one 12-base flank.
+Cross-tract exclusion as a weak flank-error branch additionally requires selected
+run lengths within six bases and at most three total edits over the common
+observed contexts on both sides of the run. Insertions and deletions are allowed
+in this context check, so a weak flank indel can still be treated as an error;
+distinct contexts retain their own supported alternatives.
+
+Instead of the component-wide flag, `primary_ambiguity.tsv` marks the selected
+run and both flanks with `homopolymer_length_family`; its evidence
+`homopolymer_family_N` is the family number in that report. Within the error
+fraction, a tract is collapsed without these records. Collapsed tract variants
+are not counted as mixed-sample allele bubbles. `--max-error-fraction 0` or
+`--max-bubble-fraction 0` disables this step.
+
+The selected length is a short-read consensus, not a measured length or a
+heteroplasmy call: stutter shifts run lengths, and repeat copies with identical
+flanks share one tract.
+
 ### Mixed-sample signal
 
 `report.json.mixed_sample` counts allele bubbles left after cleanup: pairs of
@@ -101,6 +157,10 @@ For a repeat unitig with multiple entrances and exits, the assembler scans the a
 A selected entrance/exit route must have at least `--min-junction-fragments` supporting fragments (default 3). At each end, the **sum** of all competing observed routes must be at most `--max-error-fraction` times its support. Counts below three still contribute to that competing sum. Every entrance and exit must participate in a unique dominant pairing; missing evidence or a conflicting pairing leaves the repeat unresolved. Selected routes create separate graph traversals through the repeat and permit longer contigs. Unsupported tandem-copy counts are not filled in.
 
 The method supports a primary sequence path. Rare alternate molecules can be suppressed by the dominance rule; all observed repeat-route counts are retained in `report.json`.
+
+A repeat longer than the reads and fragments stays unresolved here. When it has
+exactly two copies in direct orientation, the partial primary can still pair its
+routes by topology; see [two-copy direct repeats](paired_paths.md#two-copy-direct-repeats).
 
 ## Complete paired-path comparison
 

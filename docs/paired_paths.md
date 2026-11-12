@@ -87,6 +87,42 @@ To carry these intervals into tRNA-Pro coordinates, supply the matching FASTA an
 
 The new `report.json.primary` object records the chosen source, sequence length, graph circularity, uncertainty intervals and `final_verified`. A literal `circular=true` means a complete graph walk is present; `final_verified=false` retains uncertainty about its structure or support. `primary` is null and no primary FASTA is written if there is no candidate of at least k bases. The existing exit codes and final-publication criteria are unchanged: an unresolved run can return 2 and still provide a useful primary sequence. Annotation can then consume this frozen `primary.fasta`; its gene and NCR completeness must not be used to select a different path.
 
+### Two-copy direct repeats
+
+A repeat that no read or fragment spans leaves the loci crossing it undecided.
+Two loci A and Y may each cross the same non-anchor repeat R to the same two
+exits. When one exit leads back to Y through joins already chosen, R has two
+direct copies on one molecule: A → R → loop … Y → R → exit. The other pairing
+would separate the loop and one copy of R as a subcircle. Two loops through R
+likewise close one circle. Reads may already have chosen either join; topology
+then fills in the other when no existing choice conflicts and exactly one such
+pairing exists in a strand view. The joins extend to the other strand view by
+spelling, as reciprocal choices do.
+
+An undecided locus caused by conflicting reciprocal read choices remains
+blocked for topology pairing. Clearing the conflicting choices does not turn
+them into absent evidence; an otherwise eligible pairing reports
+`status=conflicting_choice` and leaves those connections open.
+
+These joins are inferred from topology. `report.json.primary.source.joins[].basis`
+is `single_molecule_repeat_pairing` (otherwise `fragment_score`), and
+`primary_ambiguity.tsv` marks the crossed corridor with
+`topology_inferred_repeat_pairing`; annotation treats that interval as an
+unresolved path alternative. `paired_path_resolution.primary_selection.repeat_pairings`
+lists each repeat with its entrance, loop start, loop end and exit segments, the
+spanning fragments of both pairings and whether reads already chose a join.
+`status` is `applied`, `ambiguous` (more than one pairing in a strand view) or
+`conflicting_choice`. `alternative_pairing_reads=observed` means at least the
+junction minimum spans a route of the other pairing; such reads can indicate
+deletion molecules or subcircles, for example from recombination between the
+copies. This flag checks the corresponding routes in both strand views: either
+scored view can establish observation. Counts from the two views are not added,
+because they can describe the same fragments. The route entries retain the
+counts and locus IDs of the displayed view; the other view's counts remain in
+`paired_path_resolution.loci`. Strict joins, `selected_path` and final publication
+are unchanged: the pairing is a single-molecule hypothesis, not read-supported
+structure.
+
 ## Best circular candidate
 
 Every de novo run independently selects one best available eligible circle and

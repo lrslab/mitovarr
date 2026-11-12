@@ -285,8 +285,14 @@ mod tests {
         let junction = junction.unwrap();
         let (mut edges, _, _) = graph(&input, 63, 3);
         let mut retained = HashSet::new();
-        let (unitigs, _, previous, _) =
-            crate::denovo::simplify_retaining_links(&mut edges, 63, 0.2, 0.49, &mut retained);
+        let (unitigs, _, previous, _) = crate::denovo::simplify_retaining_links(
+            &mut edges,
+            63,
+            0.2,
+            0.49,
+            &mut retained,
+            &mut Default::default(),
+        );
         assert!(
             edges.iter().any(|e| e.code == junction),
             "baseline lost the junction"

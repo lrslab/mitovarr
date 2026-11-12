@@ -4,6 +4,7 @@ pub(crate) mod anchor;
 mod bubbles;
 mod comparison;
 pub(crate) mod evidence;
+mod homopolymer;
 mod layout;
 pub(crate) mod multik;
 pub(crate) mod pairs;
@@ -512,7 +513,14 @@ fn simplify(
     fraction: f64,
     bubble_fraction: f64,
 ) -> (Vec<Unitig>, usize, Value, Vec<bubbles::Collapsed>) {
-    simplify_retaining_links(edges, k, fraction, bubble_fraction, &mut HashSet::new())
+    simplify_retaining_links(
+        edges,
+        k,
+        fraction,
+        bubble_fraction,
+        &mut HashSet::new(),
+        &mut homopolymer::Families::default(),
+    )
 }
 
 fn simplify_retaining_links(
@@ -521,11 +529,23 @@ fn simplify_retaining_links(
     fraction: f64,
     bubble_fraction: f64,
     retained_fragments: &mut HashSet<graph_kmer::Code>,
+    families: &mut homopolymer::Families,
 ) -> (Vec<Unitig>, usize, Value, Vec<bubbles::Collapsed>) {
     let (mut unitigs, mut branches) = compact(edges, k);
     let (raw_kmers, raw_branches) = (edges.len() / 2, branches);
     let (mut rounds, mut tip_kmers, mut bubble_kmers, mut weak_link_kmers) = (0, 0, 0, 0);
     let mut alternatives = std::collections::BTreeMap::new();
+    // Run-length tangles are simplified first, on the raw graph, so the length
+    // spectrum includes variants that later error rules would remove.
+    if fraction > 0.0 && bubble_fraction > 0.0 {
+        *families = homopolymer::collapse(edges, k, fraction);
+        if families.removed_kmers() > 0 {
+            (unitigs, branches) = compact(edges, k);
+        }
+        for bubble in families.alternatives() {
+            alternatives.entry(bubble.removed.clone()).or_insert(bubble);
+        }
+    }
     if fraction > 0.0 {
         loop {
             let mut starts: graph_kmer::Map<Vec<usize>> = graph_kmer::Map::default();
@@ -672,7 +692,7 @@ fn simplify_retaining_links(
         }
     }
     let alternatives: Vec<_> = alternatives.into_values().collect();
-    let stats = json!({"retained_bubble_alternatives":bubbles::reports(&alternatives),"bubble_alternatives_file":if alternatives.is_empty(){None}else{Some("bubble_alternatives.fasta")},"method":"short tips, whole-path coverage bubbles, weak boundary disconnection; strand-symmetric local support", "max_error_fraction":fraction,"max_bubble_fraction":bubble_fraction, "max_path_kmers":3*k,"max_bubble_edits":3.max(3*k/10),"bubble_edit_rule":"max(3, weak_path_kmers / 10)","bubble_support":"length-weighted mean pair-record kmer support","max_bubble_search_states":4096,"rounds":rounds,"raw_canonical_kmers":raw_kmers,"raw_directed_branch_nodes":raw_branches,"tip_kmers_removed":tip_kmers,"bubble_kmers_removed":bubble_kmers,"weak_link_kmers_removed":weak_link_kmers,"cleaned_canonical_kmers":edges.len()/2,"cleaned_directed_branch_nodes":branches});
+    let stats = json!({"retained_bubble_alternatives":bubbles::reports(&alternatives),"bubble_alternatives_file":if alternatives.is_empty(){None}else{Some("bubble_alternatives.fasta")},"method":"short tips, whole-path coverage bubbles, weak boundary disconnection; strand-symmetric local support", "max_error_fraction":fraction,"max_bubble_fraction":bubble_fraction, "max_path_kmers":3*k,"max_bubble_edits":3.max(3*k/10),"bubble_edit_rule":"max(3, weak_path_kmers / 10)","bubble_support":"length-weighted mean pair-record kmer support","max_bubble_search_states":4096,"homopolymer_families":families.report(),"rounds":rounds,"raw_canonical_kmers":raw_kmers,"raw_directed_branch_nodes":raw_branches,"tip_kmers_removed":tip_kmers,"bubble_kmers_removed":bubble_kmers,"weak_link_kmers_removed":weak_link_kmers,"cleaned_canonical_kmers":edges.len()/2,"cleaned_directed_branch_nodes":branches});
     (unitigs, branches, stats, alternatives)
 }
 
@@ -1033,12 +1053,14 @@ pub fn assemble(
     );
     let (mut edges, _, _) = graph(&counts, settings.k, settings.min_kmer_count);
     let mut retained_fragments = HashSet::new();
+    let mut families = homopolymer::Families::default();
     let (unitigs, branches, mut simplification, collapsed_bubbles) = simplify_retaining_links(
         &mut edges,
         settings.k,
         settings.max_error_fraction,
         settings.max_bubble_fraction,
         &mut retained_fragments,
+        &mut families,
     );
     let (unitigs, branches) = if settings.max_error_fraction > 0.0 {
         let (unitigs, branches, report) = shadows::remove(
@@ -1078,7 +1100,14 @@ pub fn assemble(
         &path_resolution.structural_alternatives,
     );
     for primary in &mut path_resolution.primary_candidates {
-        let affected = bubble_components.affected(&primary.candidate, settings.k);
+        primary.regions.extend(families.regions(&primary.candidate));
+        // A homopolymer tract still vetoes final publication, but its primary
+        // interval is local; other permissive bubbles flag their component.
+        let affected: Vec<_> = bubble_components
+            .affected(&primary.candidate, settings.k)
+            .into_iter()
+            .filter(|&b| !collapsed_bubbles[b - 1].homopolymer_tract())
+            .collect();
         if !affected.is_empty() {
             primary.regions.push(paths::primary::Region {
                 start: 0,

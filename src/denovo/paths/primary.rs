@@ -134,7 +134,7 @@ fn reciprocal_choices(
     loci: &[Locus],
     overlap: usize,
     choices: &mut [Option<usize>],
-) {
+) -> HashSet<usize> {
     let mut views = BTreeMap::<Vec<u8>, Vec<(usize, usize)>>::new();
     for (li, l) in loci.iter().enumerate() {
         for (ri, r) in l.routes.iter().enumerate().filter(|(_, r)| r.to != l.from) {
@@ -150,6 +150,7 @@ fn reciprocal_choices(
         .map(|(l, r)| r.map(|i| route_key(graph, l, &l.routes[i], overlap)))
         .collect();
     let original = choices.to_vec();
+    let mut blocked = HashSet::new();
     let priority = |li: usize| (loci[li].routes.len() > 1, loci[li].selected == original[li]);
     for (li, key) in keys.iter().enumerate() {
         let Some(key) = key else {
@@ -162,6 +163,7 @@ fn reciprocal_choices(
             keys[other].as_ref().is_some_and(|k| k != key) && priority(li) <= priority(other)
         }) {
             choices[li] = None;
+            blocked.insert(li);
         }
     }
     let retained = choices.to_vec();
@@ -193,6 +195,9 @@ fn reciprocal_choices(
                 .then_some(key.clone())
         })
         .collect();
+    for key in &conflicted {
+        blocked.extend(views[key].iter().map(|&(li, _)| li));
+    }
     for (li, selected) in retained.iter().enumerate() {
         if selected.is_none() {
             continue;
@@ -209,6 +214,194 @@ fn reciprocal_choices(
             }
         }
     }
+    // A stronger reciprocal observation can resolve a rejected choice. Only
+    // unresolved conflicts must remain distinct from a lack of read evidence.
+    blocked.retain(|&li| choices[li].is_none());
+    blocked
+}
+
+/// One strand view of a two-copy direct repeat: the entrance join into the loop
+/// and the loop's return join to the exit, plus the other pairing's routes,
+/// each as (locus, route) and sorted by locus.
+struct Pairing {
+    repeat: usize,
+    segments: [usize; 4],
+    selected: [(usize, usize); 2],
+    other: [(usize, usize); 2],
+}
+
+/// Two loci A and Y whose two routes each cross the same non-anchor repeat R to
+/// the same two exits. When one exit leads back to Y through joins already
+/// chosen, R has two direct copies on one molecule: A → R → loop … Y → R → exit.
+/// The other pairing would separate the loop and one copy of R as a subcircle.
+/// Two loops through R likewise close one circle. Reads may already have chosen
+/// either join; topology fills the other when nothing conflicts and exactly one
+/// such pairing exists in a strand view. The joins then extend to the other
+/// strand view by spelling, as reciprocal choices do. Strict joins are unchanged.
+fn repeat_pairings(
+    graph: &PathGraph,
+    loci: &[Locus],
+    overlap: usize,
+    choices: &mut [Option<usize>],
+    blocked: &HashSet<usize>,
+    settings: &GraphSettings,
+) -> (HashSet<(usize, usize)>, Vec<Value>) {
+    let by_source: HashMap<_, _> = loci.iter().enumerate().map(|(i, l)| (l.from, i)).collect();
+    let mut views = BTreeMap::<Vec<u8>, Vec<(usize, usize)>>::new();
+    for (li, l) in loci.iter().enumerate() {
+        for (ri, r) in l.routes.iter().enumerate() {
+            views
+                .entry(route_key(graph, l, r, overlap))
+                .or_default()
+                .push((li, ri));
+        }
+    }
+    let mut crossing = BTreeMap::<usize, BTreeSet<usize>>::new();
+    for (li, l) in loci.iter().enumerate() {
+        for &node in l.routes.iter().flat_map(|r| &r.nodes) {
+            crossing.entry(node).or_default().insert(li);
+        }
+    }
+    let scored = |li: usize| !loci[li].exhausted && !loci[li].length_limited;
+    // Both routes cross the repeat, to two different exits.
+    let exits = |li: usize, repeat: usize| match &loci[li].routes[..] {
+        [a, b] if a.to != b.to && a.nodes.contains(&repeat) && b.nodes.contains(&repeat) => {
+            Some([a.to.min(b.to), a.to.max(b.to)])
+        }
+        _ => None,
+    };
+    let route_to = |li: usize, to: usize| {
+        loci[li]
+            .routes
+            .iter()
+            .position(|r| r.to == to)
+            .expect("exit route")
+    };
+    // Keyed by the joins: the two loops of one circle find one pairing twice.
+    let mut groups = BTreeMap::<Vec<u8>, Vec<BTreeMap<[(usize, usize); 2], Pairing>>>::new();
+    for (&repeat, crossing) in &crossing {
+        let entrances: Vec<_> = crossing
+            .iter()
+            .copied()
+            .filter(|&li| exits(li, repeat).is_some())
+            .collect();
+        let reaches = |mut node: usize, target: usize| {
+            for _ in 0..=loci.len() {
+                if node == target {
+                    return true;
+                }
+                let Some(route) = by_source
+                    .get(&node)
+                    .and_then(|&li| choices[li].map(|ri| &loci[li].routes[ri]))
+                else {
+                    return false;
+                };
+                if route.nodes.contains(&repeat) {
+                    return false;
+                }
+                node = route.to;
+            }
+            false
+        };
+        let compatible = |li: usize, ri: usize| choices[li].map_or(scored(li), |c| c == ri);
+        let mut found = BTreeMap::new();
+        for &a in &entrances {
+            for &y in &entrances {
+                let Some(targets) =
+                    exits(a, repeat).filter(|t| a != y && exits(y, repeat) == Some(*t))
+                else {
+                    continue;
+                };
+                for (inner, exit) in [(targets[0], targets[1]), (targets[1], targets[0])] {
+                    let (ra, ry) = (route_to(a, inner), route_to(y, exit));
+                    let claimed = loci.iter().enumerate().any(|(li, l)| {
+                        li != a
+                            && li != y
+                            && choices[li].is_some_and(|c| [inner, exit].contains(&l.routes[c].to))
+                    });
+                    if compatible(a, ra)
+                        && compatible(y, ry)
+                        && !claimed
+                        && reaches(inner, loci[y].from)
+                    {
+                        let mut selected = [(a, ra), (y, ry)];
+                        let mut other = [(a, route_to(a, exit)), (y, route_to(y, inner))];
+                        selected.sort_unstable();
+                        other.sort_unstable();
+                        found.entry(selected).or_insert(Pairing {
+                            repeat,
+                            segments: [loci[a].from, inner, loci[y].from, exit],
+                            selected,
+                            other,
+                        });
+                    }
+                }
+            }
+        }
+        if !found.is_empty() {
+            groups
+                .entry(normalize(&graph.segments[repeat].sequence, false))
+                .or_default()
+                .push(found);
+        }
+    }
+    let key =
+        |&(li, ri): &(usize, usize)| route_key(graph, &loci[li], &loci[li].routes[ri], overlap);
+    let mut inferred = HashSet::new();
+    let mut reports = Vec::new();
+    for found in groups.into_values() {
+        let ambiguous = found.iter().any(|f| f.len() > 1);
+        let candidates: Vec<_> = found.iter().filter_map(|f| f.values().next()).collect();
+        let first = candidates[0];
+        let keys: BTreeSet<_> = first.selected.iter().map(key).collect();
+        let agree = candidates
+            .iter()
+            .all(|p| p.selected.iter().map(key).collect::<BTreeSet<_>>() == keys);
+        // Every strand view of both joins, as reciprocal choices would project them.
+        let joins: Vec<_> = keys.iter().flat_map(|k| views[k].iter().copied()).collect();
+        let conflict = joins
+            .iter()
+            .any(|&(li, ri)| blocked.contains(&li) || choices[li].map_or(!scored(li), |c| c != ri));
+        let status = if ambiguous {
+            "ambiguous"
+        } else if !agree || conflict {
+            "conflicting_choice"
+        } else {
+            "applied"
+        };
+        let spanning = |&(li, ri): &(usize, usize)| {
+            let l = &loci[li];
+            json!({"locus":li+1,"path":ri+1,"source_segment":l.from+1,"target_segment":l.routes[ri].to+1,
+                "spanning_fragments":scored(li).then_some(l.spanning[ri]),
+                "read_choice":choices[li]==Some(ri) && !inferred.contains(&(li, ri))})
+        };
+        // The same physical route can recruit different fragments from its
+        // two source anchors. Check either view without adding duplicate counts.
+        let observed = first
+            .other
+            .iter()
+            .flat_map(|route| &views[&key(route)])
+            .any(|&(li, ri)| {
+                scored(li) && loci[li].spanning[ri] >= settings.min_junction_fragments
+            });
+        reports.push(json!({"repeat_segment":first.repeat+1,
+            "repeat_length":graph.segments[first.repeat].sequence.len(),
+            "entrance_segment":first.segments[0]+1,"loop_start_segment":first.segments[1]+1,
+            "loop_end_segment":first.segments[2]+1,"exit_segment":first.segments[3]+1,
+            "selected_routes":first.selected.iter().map(spanning).collect::<Vec<_>>(),
+            "alternative_routes":first.other.iter().map(spanning).collect::<Vec<_>>(),
+            "alternative_pairing_reads":if observed {"observed"} else {"not_observed"},
+            "status":status}));
+        if status == "applied" {
+            for (li, ri) in joins {
+                if choices[li].is_none() {
+                    choices[li] = Some(ri);
+                    inferred.insert((li, ri));
+                }
+            }
+        }
+    }
+    (inferred, reports)
 }
 
 pub(super) fn local_candidates(
@@ -217,9 +410,11 @@ pub(super) fn local_candidates(
     anchors: &[usize],
     overlap: usize,
     settings: &GraphSettings,
-) -> (Vec<Primary>, Vec<Option<usize>>) {
+) -> (Vec<Primary>, Vec<Option<usize>>, Vec<Value>) {
     let mut choices: Vec<_> = loci.iter().map(|l| choose(l, settings)).collect();
-    reciprocal_choices(graph, loci, overlap, &mut choices);
+    let blocked = reciprocal_choices(graph, loci, overlap, &mut choices);
+    let (inferred, pairings) =
+        repeat_pairings(graph, loci, overlap, &mut choices, &blocked, settings);
     let mut connections = HashMap::new();
     let mut incoming = HashMap::<usize, usize>::new();
     for (li, selected) in choices.iter().enumerate() {
@@ -256,7 +451,18 @@ pub(super) fn local_candidates(
             if consumed.contains(&route.to) && route.to != first {
                 break;
             }
-            if locus.routes.len() > 1 {
+            let topology = inferred.contains(&(li, ri));
+            if topology {
+                // The whole repeat copy: which entrance pairs with which exit.
+                let offset = sequence.len() - route.left_end - overlap;
+                regions.push(Region {
+                    start: offset + route.left_end,
+                    end: offset + route.right_start,
+                    evidence: format!("locus_{}", li + 1),
+                    reason: "topology_inferred_repeat_pairing",
+                    alternatives: locus.routes.len() - 1,
+                });
+            } else if locus.routes.len() > 1 {
                 let prefix = locus
                     .routes
                     .iter()
@@ -300,8 +506,10 @@ pub(super) fn local_candidates(
                     });
                 }
             }
-            joins
-                .push(json!({"locus":li+1,"path":ri+1,"strict_selected":locus.selected==Some(ri)}));
+            joins.push(
+                json!({"locus":li+1,"path":ri+1,"strict_selected":locus.selected==Some(ri),
+                "basis":if topology {"single_molecule_repeat_pairing"} else {"fragment_score"}}),
+            );
             for &id in &route.nodes {
                 sequence.extend_from_slice(&graph.segments[id].sequence[overlap..]);
                 consumed.insert(id);
@@ -346,7 +554,7 @@ pub(super) fn local_candidates(
                 regions,
             });
     }
-    (assembled.into_values().collect(), choices)
+    (assembled.into_values().collect(), choices, pairings)
 }
 
 fn add_open_ends(regions: &mut Vec<Region>, length: usize) {
@@ -896,11 +1104,302 @@ mod tests {
         }
     }
 
+    /// Both strand views of a forward segment graph (overlap 1); every segment
+    /// except `repeats` is an anchor.
+    fn repeat_fixture(
+        segments: &[&[u8]],
+        forward: &[Vec<usize>],
+        repeats: &[usize],
+    ) -> (PathGraph, Vec<Locus>) {
+        use super::super::super::threading::Segment;
+        let n = segments.len();
+        let mut sequences: Vec<Vec<u8>> = segments.iter().map(|s| s.to_vec()).collect();
+        sequences.extend(segments.iter().map(|s| kmer::reverse_complement(s)));
+        let mut outgoing = vec![Vec::new(); 2 * n];
+        for (from, targets) in forward.iter().enumerate() {
+            for &to in targets {
+                outgoing[from].push(to);
+                outgoing[n + to].push(n + from);
+            }
+        }
+        let graph = PathGraph {
+            segments: sequences
+                .into_iter()
+                .map(|sequence| Segment {
+                    sequence,
+                    circular: false,
+                })
+                .collect(),
+            outgoing,
+        };
+        let anchors: HashSet<_> = (0..2 * n)
+            .filter(|&id| !repeats.contains(&(id % n)))
+            .collect();
+        let mut order: Vec<_> = anchors.iter().copied().collect();
+        order.sort_unstable();
+        let loci = order
+            .iter()
+            .map(|&from| enumerate(&graph, from, &anchors, 1, 100, 100, 100))
+            .collect();
+        (graph, loci)
+    }
+
+    fn settings() -> GraphSettings {
+        GraphSettings {
+            coverage_layout: false,
+            multi_k_layout: false,
+            k: 15,
+            min_kmer_count: 3,
+            max_error_fraction: 0.2,
+            max_bubble_fraction: 0.49,
+            min_depth: 10,
+            min_junction_fragments: 3,
+            max_validation_pairs: 10000,
+        }
+    }
+
+    #[test]
+    fn two_copy_direct_repeat_pairs_entrance_loop_and_exit_into_one_molecule() {
+        let (graph, loci) = repeat_fixture(
+            &[b"TTACC", b"CGTAG", b"GAAATC", b"GTCAA"],
+            &[vec![1], vec![2, 3], vec![1], vec![]],
+            &[1],
+        );
+        let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
+        let (primaries, choices, reports) =
+            local_candidates(&graph, &loci, &anchors, 1, &settings());
+        let expected = normalize(b"TTACCGTAGAAATCGTAGTCAA", false);
+        let joined: Vec<_> = primaries
+            .iter()
+            .filter(|p| p.candidate.sequence.len() > 6)
+            .collect();
+        assert_eq!(joined.len(), 1);
+        assert_eq!(joined[0].candidate.sequence, expected);
+        let inferred: Vec<_> = joined[0]
+            .regions
+            .iter()
+            .filter(|r| r.reason == "topology_inferred_repeat_pairing")
+            .map(|r| (r.start, r.end))
+            .collect();
+        assert_eq!(inferred, vec![(4, 9), (13, 18)]);
+        assert!(joined[0].source["joins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(
+                |j| j["basis"] == "single_molecule_repeat_pairing" && j["strict_selected"] == false
+            ));
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0]["status"], "applied");
+        assert_eq!(reports[0]["alternative_pairing_reads"], "not_observed");
+        assert_eq!(choices.iter().filter(|c| c.is_some()).count(), 4);
+        assert!(loci.iter().all(|l| l.selected.is_none()));
+    }
+
+    #[test]
+    fn a_read_supported_route_or_one_qualifying_view_keeps_topology_out() {
+        let shape = (
+            [b"TTACC".as_slice(), b"CGTAG", b"GAAATC", b"GTCAA"],
+            [vec![1], vec![2, 3], vec![1], vec![]],
+        );
+        let (graph, mut loci) = repeat_fixture(&shape.0, &shape.1, &[1]);
+        // Reads favour the route that separates the loop as a subcircle.
+        let entrance = loci.iter().position(|l| l.from == 0).unwrap();
+        let skip = loci[entrance]
+            .routes
+            .iter()
+            .position(|r| r.to == 3)
+            .unwrap();
+        loci[entrance].totals[skip] = 100.0;
+        loci[entrance].spanning[skip] = 20;
+        loci[entrance].strong_votes[skip][1 - skip] = 20;
+        let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
+        let (_, choices, reports) = local_candidates(&graph, &loci, &anchors, 1, &settings());
+        assert_eq!(choices[entrance], Some(skip));
+        assert!(reports.is_empty());
+        // An exhausted search in the other strand view of a join blocks it.
+        let (graph, mut loci) = repeat_fixture(&shape.0, &shape.1, &[1]);
+        let reverse = loci.iter().position(|l| l.from == 6).unwrap();
+        loci[reverse].exhausted = true;
+        let (_, choices, reports) = local_candidates(&graph, &loci, &anchors, 1, &settings());
+        assert!(choices.iter().all(Option::is_none));
+        assert_eq!(reports[0]["status"], "conflicting_choice");
+    }
+
+    #[test]
+    fn a_loop_closed_by_chosen_joins_pairs_despite_a_stub_into_its_end() {
+        // a → R → l1 → l2 → w → R → b, with a stub s also entering w.
+        let (graph, mut loci) = repeat_fixture(
+            &[
+                b"TTACC", b"CGTAG", b"GAAAT", b"TCCGA", b"TTGTA", b"AGGC", b"GTCAA",
+            ],
+            &[
+                vec![1],
+                vec![2, 6],
+                vec![3],
+                vec![5],
+                vec![5],
+                vec![1],
+                vec![],
+            ],
+            &[1, 5],
+        );
+        let select = |loci: &mut Vec<Locus>, from: usize, to: usize| {
+            let li = loci.iter().position(|l| l.from == from).unwrap();
+            let ri = loci[li].routes.iter().position(|r| r.to == to).unwrap();
+            loci[li].selected = Some(ri);
+            loci[li].spanning[ri] = 50;
+        };
+        select(&mut loci, 0, 2);
+        select(&mut loci, 2, 3);
+        let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
+        let (primaries, _, reports) = local_candidates(&graph, &loci, &anchors, 1, &settings());
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0]["status"], "applied");
+        assert_eq!(reports[0]["loop_end_segment"], 4);
+        let expected = normalize(b"TTACCGTAGAAATCCGAGGCGTAGTCAA", false);
+        let joined = primaries
+            .iter()
+            .find(|p| p.candidate.sequence == expected)
+            .expect("one molecule");
+        let joins = joined.source["joins"].as_array().unwrap();
+        assert_eq!(
+            joins
+                .iter()
+                .filter(|j| j["basis"] == "single_molecule_repeat_pairing")
+                .count(),
+            1
+        );
+        assert_eq!(
+            joined
+                .regions
+                .iter()
+                .filter(|r| r.reason == "topology_inferred_repeat_pairing")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn two_loops_through_one_repeat_close_a_single_circle() {
+        let (graph, loci) = repeat_fixture(
+            &[b"GAACC", b"CGTAG", b"GATTC"],
+            &[vec![1], vec![0, 2], vec![1]],
+            &[1],
+        );
+        let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
+        let (primaries, _, reports) = local_candidates(&graph, &loci, &anchors, 1, &settings());
+        assert_eq!(reports[0]["status"], "applied");
+        let circles: Vec<_> = primaries.iter().filter(|p| p.candidate.circular).collect();
+        assert_eq!(circles.len(), 1);
+        assert_eq!(
+            circles[0].candidate.sequence,
+            normalize(b"GAACCGTAGATTCGTA", true)
+        );
+    }
+
     #[test]
     fn conflicting_reverse_only_choices_stay_open_instead_of_last_projection_winning() {
         let (graph, loci) = reciprocal_fixture();
         let mut choices = vec![None, Some(0), Some(0)];
         reciprocal_choices(&graph, &loci, 1, &mut choices);
         assert_eq!(choices, vec![None, None, None]);
+    }
+
+    #[test]
+    fn reciprocal_read_conflicts_block_topology_in_both_locus_orders() {
+        for strict in [false, true] {
+            for reverse_order in [false, true] {
+                let (graph, mut loci) = repeat_fixture(
+                    &[b"TTACC", b"CGTAG", b"GAAATC", b"GTCAA"],
+                    &[vec![1], vec![2, 3], vec![1], vec![]],
+                    &[1],
+                );
+                for from in [6, 7] {
+                    let l = loci.iter_mut().find(|l| l.from == from).unwrap();
+                    let ri = l.routes.iter().position(|r| r.to == 4).unwrap();
+                    l.totals[ri] = 100.0;
+                    l.spanning[ri] = 20;
+                    l.strong_votes[ri][1 - ri] = 20;
+                    l.selected = strict.then_some(ri);
+                }
+                if reverse_order {
+                    loci.reverse();
+                }
+                let mut choices: Vec<_> = loci.iter().map(|l| choose(l, &settings())).collect();
+                assert_eq!(choices.iter().filter(|c| c.is_some()).count(), 2);
+                let blocked = reciprocal_choices(&graph, &loci, 1, &mut choices);
+                assert!(choices.iter().all(Option::is_none));
+                assert!(loci
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, l)| [0, 6, 7].contains(&l.from))
+                    .all(|(li, _)| blocked.contains(&li)));
+                let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
+                let (primaries, choices, reports) =
+                    local_candidates(&graph, &loci, &anchors, 1, &settings());
+                assert!(choices.iter().all(Option::is_none));
+                assert_eq!(reports.len(), 1);
+                assert_eq!(reports[0]["status"], "conflicting_choice");
+                assert_eq!(reports[0]["alternative_pairing_reads"], "observed");
+                assert!(primaries
+                    .iter()
+                    .flat_map(|p| &p.regions)
+                    .all(|r| r.reason != "topology_inferred_repeat_pairing"));
+            }
+        }
+    }
+
+    #[test]
+    fn a_rejected_forward_read_choice_stays_open_after_repeat_pairing() {
+        let (graph, mut loci) = repeat_fixture(
+            &[b"TTACC", b"CGTAG", b"GAAATC", b"GTCAA"],
+            &[vec![1], vec![2, 3], vec![1], vec![]],
+            &[1],
+        );
+        for (from, to) in [(0, 3), (7, 6)] {
+            let l = loci.iter_mut().find(|l| l.from == from).unwrap();
+            let ri = l.routes.iter().position(|r| r.to == to).unwrap();
+            l.totals[ri] = 100.0;
+            l.spanning[ri] = 20;
+            l.strong_votes[ri][1 - ri] = 20;
+        }
+        let entrance = loci.iter().position(|l| l.from == 0).unwrap();
+        let mut choices: Vec<_> = loci.iter().map(|l| choose(l, &settings())).collect();
+        let blocked = reciprocal_choices(&graph, &loci, 1, &mut choices);
+        assert!(blocked.contains(&entrance));
+        assert!(choices[entrance].is_none());
+        let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
+        let (_, choices, reports) = local_candidates(&graph, &loci, &anchors, 1, &settings());
+        assert!(choices[entrance].is_none());
+        assert_eq!(reports[0]["status"], "conflicting_choice");
+    }
+
+    #[test]
+    fn alternative_pairing_evidence_checks_both_views_without_adding_counts() {
+        for (forward, reverse, observed) in
+            [(0, 20, true), (20, 0, true), (2, 2, false), (0, 0, false)]
+        {
+            let (graph, mut loci) = repeat_fixture(
+                &[b"TTACC", b"CGTAG", b"GAAATC", b"GTCAA"],
+                &[vec![1], vec![2, 3], vec![1], vec![]],
+                &[1],
+            );
+            for (from, to, spanning) in [(0, 3, forward), (7, 4, reverse)] {
+                let l = loci.iter_mut().find(|l| l.from == from).unwrap();
+                let ri = l.routes.iter().position(|r| r.to == to).unwrap();
+                l.spanning[ri] = spanning;
+            }
+            // Spanning evidence without a winning score/vote margin is not a join.
+            assert!(loci.iter().all(|l| choose(l, &settings()).is_none()));
+            let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
+            let (_, _, reports) = local_candidates(&graph, &loci, &anchors, 1, &settings());
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0]["status"], "applied");
+            assert_eq!(
+                reports[0]["alternative_pairing_reads"],
+                if observed { "observed" } else { "not_observed" }
+            );
+        }
     }
 }

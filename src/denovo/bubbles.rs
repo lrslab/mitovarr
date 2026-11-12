@@ -14,30 +14,62 @@ pub(super) struct Alternative {
     pub min_count: u32,
 }
 
+const HOMOPOLYMER: &str = "homopolymer_minor_length_or_flank_variant_above_error_fraction";
+
 pub(super) struct Collapsed {
     pub removed: Vec<u8>,
     retained: Vec<u8>,
     removed_mean: f64,
     retained_mean: f64,
+    reason: &'static str,
 }
 
 impl Collapsed {
     pub fn new(weak: &Unitig, alternative: Alternative) -> Self {
-        let reverse = kmer::reverse_complement(&weak.sequence);
-        let flipped = reverse < weak.sequence;
+        Self::oriented(
+            weak.sequence.clone(),
+            alternative.sequence,
+            weak.mean_count,
+            alternative.mean_count,
+            "outside_conservative_length_edit_or_per_kmer_support_rule",
+        )
+    }
+
+    /// A homopolymer tract's strongest minor length or flank variant against its
+    /// selected spelling, each as one observed k-mer holding the whole run.
+    pub fn homopolymer(
+        removed: Vec<u8>,
+        retained: Vec<u8>,
+        removed_mean: f64,
+        retained_mean: f64,
+    ) -> Self {
+        Self::oriented(removed, retained, removed_mean, retained_mean, HOMOPOLYMER)
+    }
+
+    /// Homopolymer tracts are marked by their own local primary interval.
+    pub fn homopolymer_tract(&self) -> bool {
+        self.reason == HOMOPOLYMER
+    }
+
+    fn oriented(
+        removed: Vec<u8>,
+        retained: Vec<u8>,
+        removed_mean: f64,
+        retained_mean: f64,
+        reason: &'static str,
+    ) -> Self {
+        let reverse = kmer::reverse_complement(&removed);
+        let flipped = reverse < removed;
         Self {
-            removed: if flipped {
-                reverse
-            } else {
-                weak.sequence.clone()
-            },
+            removed: if flipped { reverse } else { removed },
             retained: if flipped {
-                kmer::reverse_complement(&alternative.sequence)
+                kmer::reverse_complement(&retained)
             } else {
-                alternative.sequence
+                retained
             },
-            removed_mean: weak.mean_count,
-            retained_mean: alternative.mean_count,
+            removed_mean,
+            retained_mean,
+            reason,
         }
     }
 }
@@ -47,9 +79,13 @@ pub(super) fn reports(bubbles: &[Collapsed]) -> Vec<Value> {
         "bubble":i+1,"removed_length":b.removed.len(),"retained_length":b.retained.len(),
         "removed_mean_kmer_support":b.removed_mean,"retained_mean_kmer_support":b.retained_mean,
         "weak_strong_ratio":b.removed_mean/b.retained_mean,
-        "reason":"outside_conservative_length_edit_or_per_kmer_support_rule",
+        "reason":b.reason,
         "status":"retained_for_primary_only; requires_independent_resolution_before_final",
-        "ambiguity_scope":"original supported graph component; not a localized variant interval"
+        "ambiguity_scope":if b.homopolymer_tract() {
+            "final publication: original supported graph component; primary: local homopolymer_length_family interval"
+        } else {
+            "original supported graph component; not a localized variant interval"
+        }
     })).collect()
 }
 

@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 0.2.2 - 2026-11-02
+
+- De novo: collapse each homopolymer tract before graph cleanup to its
+  best-supported run length and flank spelling, removing other lengths and the
+  flank miscalls of reads that cross a long run. A minor above
+  `--max-error-fraction` vetoes final publication like a permissive bubble and
+  is marked locally as `homopolymer_length_family`;
+  `graph_simplification.homopolymer_families` reports each tract's spectrum.
+- De novo: in the partial primary, pair the routes of an unspanned two-copy
+  direct repeat so every unique segment stays in one molecule. These joins are
+  marked `topology_inferred_repeat_pairing` and reported in
+  `primary_selection.repeat_pairings`; strict joins and final publication are
+  unchanged. Primary joins gain a `basis` field.
+- Fix homopolymer evidence suppression across distinct tracts sharing only a
+  short flank. Weak flank-error exclusion now also requires matching observed
+  contexts, retaining supported local minor lengths and their publication veto.
+- Preserve unresolved reciprocal read-choice conflicts through repeat pairing,
+  so topology cannot reconnect paths left open by conflicting read evidence.
+- Report alternative repeat-pairing evidence from either strand view without
+  adding the two views' potentially overlapping fragment counts. CLI options,
+  JSON field names and schema identifiers are unchanged by these fixes.
+
 ## 0.2.1 - 2026-10-16
 
 - Fix the Linux x86_64 release build: use GCC to link Rust's bundled static

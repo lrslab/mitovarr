@@ -229,7 +229,9 @@ pub(super) fn project(
             } else if matched.iter().any(|r| {
                 matches!(
                     r.reason.as_str(),
-                    "competing_cycle_paths" | "majority_path_structure_unresolved"
+                    "competing_cycle_paths"
+                        | "majority_path_structure_unresolved"
+                        | "topology_inferred_repeat_pairing"
                 )
             }) {
                 "unresolved_path_alternatives"
