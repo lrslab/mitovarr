@@ -1,6 +1,6 @@
 # mitovarr CLI reference
 
-Captured from `mitovarr 0.2.2` on 2026-11-02. Assembly commands are grouped into de novo assembly (`assemble-baited`, `assemble-seeded`) and mapping assembly (`assemble-mapping`). Current examples are in the [README](../README.md); method details are in the [documentation index](README.md). Regenerate these help sections after changing CLI options or defaults.
+Captured from `mitovarr 0.2.2` on 2026-11-02; the `annotate` section was refreshed on 2026-11-13 for the unreleased `--assembly-report` option. Assembly commands are grouped into de novo assembly (`assemble-baited`, `assemble-seeded`) and mapping assembly (`assemble-mapping`). Current examples are in the [README](../README.md); method details are in the [documentation index](README.md). Regenerate these help sections after changing CLI options or defaults.
 
 ## Top-level commands
 
@@ -266,6 +266,9 @@ Options:
 
       --assembly-ambiguity <ASSEMBLY_AMBIGUITY>
           Project assembly ambiguity intervals from matching FASTA coordinates
+
+      --assembly-report <ASSEMBLY_REPORT>
+          De novo report.json of the run that wrote the input primary.fasta; adds the complete-except-NCR1 claim level
 
       --ncr-min-len <NCR_MIN_LEN>
           Minimum intergenic length for NCR intervals; shorter named loci remain in ncr_loci.tsv

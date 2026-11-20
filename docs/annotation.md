@@ -3,7 +3,9 @@
 NCR1 completeness is not required for gene-level evaluation. Every annotation
 now writes `gene_quality.tsv` and `records[].gene_quality`, distinguishing
 annotation-clear models from missing, incomplete, duplicated or uncertain gene
-placements. Supplied assembly uncertainty still flags affected genes. See
+placements. Supplied assembly uncertainty still flags affected genes. With the
+de novo `report.json`, `--assembly-report` also states whether the primary is
+[complete except NCR1](partial_results.md#claim-level-complete-except-ncr1). See
 [partial results and the limits of these checks](partial_results.md).
 
 [中文：tRNA/CDS 检出与完整度规则](annotation.zh-CN.md).
@@ -14,6 +16,7 @@ placements. Supplied assembly uncertainty still flags affected genes. See
 mitovarr annotate \
   --fasta runs/AF16_denovo/primary.fasta --species cbr \
   --assembly-ambiguity runs/AF16_denovo/primary_ambiguity.tsv \
+  --assembly-report runs/AF16_denovo/report.json \
   --rotate-to-trna-pro --out runs/AF16_annotation
 ```
 
@@ -100,7 +103,9 @@ Optionally supply `--assembly-ambiguity primary_ambiguity.tsv` with the matching
 
 The optional outputs `assembly_ambiguity.tsv` and `assembly_ambiguity.gff3` use **one-based inclusive coordinates in `annotated.fasta`**. The TSV retains the six input columns (`sequence, start, end, evidence, reason, alternatives`) and appends `id, input_segments_1based, genes, ncr_loci`; split regions have one row per output segment. The projected TSV and `annotated.fasta` can be supplied together to a subsequent annotation. Inputs must already use the same coordinates: mapping `ambiguity.tsv` describes the reference and is not accepted by this option.
 
-Each JSON record adds `assembly_evidence` when the option is supplied, otherwise null. Its `ncr_loci` keep the biological `annotation_status` separately from `evidence_status`: `open_contig_end`, `unknown_sequence`, `fixed_span_graph_fill`, `tandem_repeat_length_conflict`, `tandem_repeat_length_unmeasured`, `unresolved_path_alternatives`, `retained_assembly_alternatives` or `no_reported_path_ambiguity`. The two tandem statuses mean reads crossing a repeat in the locus disagree with the consensus length, or no read crossed it, so the locus length is not a measurement (see [tandem-repeat length evidence](mapping_local_assembly.md#tandem-repeat-length-evidence)). `fixed_span_graph_fill` means mapping maximum-consensus N bases in the locus were filled at the existing span, so the locus length is a reference-guided prior; the same label is written to `sequence_origin` in `ncr.tsv`/`ncr.gff3`. All source regions remain available even when one status takes precedence. Absence of a reported path ambiguity does not establish resolved structure; `structural_resolution_from_reads` is explicitly `not_certified_by_coordinate_projection`.
+Each JSON record adds `assembly_evidence` when the option is supplied, otherwise null. Its `ncr_loci` keep the biological `annotation_status` separately from `evidence_status`: `open_contig_end`, `unknown_sequence`, `fixed_span_graph_fill`, `tandem_repeat_length_conflict`, `tandem_repeat_length_unmeasured`, `unresolved_path_alternatives`, `low_read_depth`, `retained_assembly_alternatives` or `no_reported_path_ambiguity`. The two tandem statuses mean reads crossing a repeat in the locus disagree with the consensus length, or no read crossed it, so the locus length is not a measurement (see [tandem-repeat length evidence](mapping_local_assembly.md#tandem-repeat-length-evidence)). `fixed_span_graph_fill` means mapping maximum-consensus N bases in the locus were filled at the existing span, so the locus length is a reference-guided prior; the same label is written to `sequence_origin` in `ncr.tsv`/`ncr.gff3`. All source regions remain available even when one status takes precedence. Absence of a reported path ambiguity does not establish resolved structure; `structural_resolution_from_reads` is explicitly `not_certified_by_coordinate_projection`.
+
+`--assembly-report` takes the de novo `report.json` of the run that wrote the input `primary.fasta` and requires `--assembly-ambiguity`. It is read after assembly, like the ambiguity table, and never enters gene prediction. Each JSON record gains `claim_level`, and `claim_level.tsv` is written; without the option `claim_level.status` is `not_assessed`. The level and its closure state are described in [partial results](partial_results.md#claim-level-complete-except-ncr1).
 
 Evidence is associated with positional loci even when no NCR interval passes the length threshold. For a zero-length gap, it overlaps either base beside the touching-gene junction; for overlapping flanks, their shared bases; for a short gap, the actual intergenic bases. Thus `adjacent_without_gap` can correctly coexist with `retained_assembly_alternatives`. Ambiguity inside a flanking gene away from that junction is not automatically NCR ambiguity. Mapping local assembly's `structural_ambiguity.tsv` can also be supplied with its matching `candidate.fasta`; the output column formats are unchanged.
 
@@ -118,7 +123,8 @@ Evidence is associated with positional loci even when no NCR interval passes the
 | `ncr.gff3`, `ncr.tsv`, `ncr.fasta` | Positional NCR intervals and generic gaps, their boundaries and sample sequences |
 | `ncr_loci.tsv` | Four NCR position states per species contig, including unresolved or short intervals |
 | `assembly_ambiguity.tsv`, `assembly_ambiguity.gff3` | Only with `--assembly-ambiguity`: projected source intervals, including open ends and retained path alternatives |
-| `report.json` | Per-contig genes, missing and non-full-length models, `gene_quality`, search limits, coordinate transformation, NCR regions/loci and optional `assembly_evidence` |
+| `claim_level.tsv` | Only with `--assembly-report`: one row per record with the `complete_except_ncr1` level, closure state and reasons |
+| `report.json` | Per-contig genes, missing and non-full-length models, `gene_quality`, `claim_level`, search limits, coordinate transformation, NCR regions/loci and optional `assembly_evidence` |
 
 GFF/TSV/JSON segment positions are 1-based inclusive. Gene segments follow biological order; NCR segments follow forward genomic order through a possible circular origin. For partial CDS the phase is inferred from the model interval, and completeness remains partial; translation is never silently skipped because the GFF phase is missing. Gene/protein FASTA IDs match the GFF feature IDs. A `feature_counts` total includes partial and duplicate gene placements; `full_length_counts` includes supported genes, and `models_without_full_length_support` asks whether each expected model has at least one supported placement. Counts alone do not validate an assembly.
 

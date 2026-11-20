@@ -1268,10 +1268,149 @@ fn four_haplotype_mixture_does_not_publish_sequence_created_by_bubble_cleanup() 
             .replace("primary\t", "best_circular\t")
     );
     assert!(dir.path("mixture/bubble_alternatives.fasta").exists());
-    assert!(
-        fs::read_to_string(dir.path("mixture/primary_ambiguity.tsv"))
+    // Each collapsed allele marks its own base, not the whole primary. The four
+    // sites are 150 bases apart whatever the output rotation and strand.
+    let table = fs::read_to_string(dir.path("mixture/primary_ambiguity.tsv")).unwrap();
+    assert!(!table.contains("collapsed_bubble_component_unresolved"));
+    let mut sites: Vec<usize> = table
+        .lines()
+        .skip(1)
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .filter(|row| row[4] == "collapsed_bubble_alternative")
+        .map(|row| {
+            assert_eq!(row[1], row[2], "one base per allele: {row:?}");
+            assert!(row[3].starts_with("collapsed_bubble_"));
+            assert_eq!(row[5], "1");
+            row[1].parse().unwrap()
+        })
+        .collect();
+    sites.sort_unstable();
+    assert_eq!(sites.len(), 4, "{table}");
+    let mut gaps: Vec<_> = (0..4)
+        .map(|i| (sites[(i + 1) % 4] + 1800 - sites[i]) % 1800)
+        .collect();
+    gaps.sort_unstable();
+    assert_eq!(gaps, [150, 150, 150, 1350]);
+    let bubbles = &result["primary"]["collapsed_bubbles"];
+    assert_eq!(bubbles["local_intervals"].as_array().unwrap().len(), 4);
+    assert!(bubbles["not_placed"].as_array().unwrap().is_empty());
+    // The strict status still counts every bubble of the component.
+    assert_eq!(
+        result["validation"]["unresolved_collapsed_bubbles"]
+            .as_array()
             .unwrap()
-            .contains("collapsed_bubble_component_unresolved")
+            .len(),
+        4
+    );
+    // The primary is the validated circle: its depth is reused, not recomputed.
+    let support = &result["primary"]["read_validation"];
+    assert_eq!(support["status"], "performed");
+    assert_eq!(support["coverage_file"], "coverage.tsv");
+    assert_eq!(support["low_depth_bases"], 0);
+    assert!(!dir.path("mixture/primary_coverage.tsv").exists());
+    assert_eq!(result["primary"]["closure"]["state"], "circle");
+    assert_eq!(result["primary"]["closure"]["verified"], false);
+}
+
+#[test]
+fn linear_primary_is_read_validated_per_base_and_stays_unresolved() {
+    let dir = Fixture::new();
+    let genome = dna(1500, 5512983);
+    // Linear fragments of 170 bases from every start. Fragments with a read
+    // over bases 700..730 are thinned to one start in twenty: enough k-mer
+    // support to keep one contig, too little matching depth for validation.
+    let over = |start: usize| start < 730 && start + 100 > 700;
+    let reads: Vec<_> = (0..=genome.len() - 170)
+        .filter(|&start| !(over(start) || over(start + 70)) || start % 20 == 0)
+        .map(|start| {
+            (
+                format!("read{start}"),
+                genome[start..start + 100].to_vec(),
+                reverse_complement(&genome[start + 70..start + 170]),
+            )
+        })
+        .collect();
+    write_reads(&dir, &reads, false);
+    assert!(!assembly(&dir, "assemble-denovo", "linear", &["--k", "31"]));
+    let result = report(&dir, "linear");
+    assert_eq!(result["status"], "unresolved");
+    assert_eq!(result["final_published"], false);
+    // No circle was selected, so the strict validation did not run.
+    assert!(result["validation"].is_null());
+    assert!(!dir.path("linear/coverage.tsv").exists());
+    assert!(!dir.path("linear/consensus.fasta").exists());
+    let primary = &result["primary"];
+    assert_eq!(primary["circular"], false);
+    assert_eq!(primary["final_verified"], false);
+    let sequence = load_reference(&dir.path("linear/primary.fasta"), None)
+        .unwrap()
+        .sequence;
+    let length = sequence.len();
+    assert!(length >= 1490, "{length}");
+    let forward = genome.windows(length).position(|w| w == sequence);
+    let reverse = reverse_complement(&genome)
+        .windows(length)
+        .position(|w| w == sequence);
+    assert!(forward.is_some() || reverse.is_some());
+    assert_eq!(primary["closure"]["state"], "not_observed");
+    let support = &primary["read_validation"];
+    assert_eq!(support["status"], "performed");
+    assert_eq!(support["topology"], "linear");
+    assert_eq!(support["closure_tested"], false);
+    assert_eq!(support["minimum_depth_required"], 10);
+    assert_eq!(support["coverage_file"], "primary_coverage.tsv");
+    assert_eq!(support["scan"]["pairs"], reads.len());
+    let coverage = fs::read_to_string(dir.path("linear/primary_coverage.tsv")).unwrap();
+    assert_eq!(coverage.lines().count(), length + 1);
+    let intervals: Vec<(usize, usize)> = support["low_depth_intervals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["start"].as_u64().unwrap() as usize,
+                i["end"].as_u64().unwrap() as usize,
+            )
+        })
+        .collect();
+    // Depth falls at the two open ends and in the thinned window, nowhere else.
+    assert_eq!(intervals.len(), 3, "{intervals:?}");
+    assert_eq!(intervals[0].0, 1);
+    assert!(intervals[0].1 < 30, "{intervals:?}");
+    assert_eq!(intervals[2].1, length);
+    assert!(intervals[2].0 > length - 30, "{intervals:?}");
+    // The thinned window lies near base 700 from one end or the other.
+    let (start, end) = intervals[1];
+    let middle = if forward.is_some() {
+        (start + end) / 2
+    } else {
+        length - (start + end) / 2
+    };
+    assert!((690..750).contains(&middle), "{intervals:?}");
+    assert!(end - start < 80, "{intervals:?}");
+    assert_eq!(
+        support["low_depth_bases"].as_u64().unwrap() as usize,
+        intervals.iter().map(|(a, b)| b - a + 1).sum::<usize>()
+    );
+    // The same intervals reach the table that annotation projects.
+    let table = fs::read_to_string(dir.path("linear/primary_ambiguity.tsv")).unwrap();
+    let rows: Vec<(usize, usize)> = table
+        .lines()
+        .skip(1)
+        .map(|line| line.split('\t').collect::<Vec<_>>())
+        .filter(|row| row[4] == "low_matching_read_depth")
+        .map(|row| {
+            assert!(row[3].starts_with("read_validation_"));
+            (row[1].parse().unwrap(), row[2].parse().unwrap())
+        })
+        .collect();
+    assert_eq!(rows, intervals);
+    assert_eq!(
+        table
+            .lines()
+            .filter(|l| l.contains("\topen_graph_end\t"))
+            .count(),
+        2
     );
 }
 

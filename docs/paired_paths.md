@@ -78,14 +78,23 @@ One representative per cycle family enters component selection. Distinct sample 
 
 `primary_ambiguity.tsv` localizes retained alternatives and open graph ends on `primary.fasta`. Columns are `sequence, start, end, evidence, reason, alternatives`; coordinates are **one-based inclusive before tRNA-Pro rotation**. Complete-cycle variable blocks are projected through the reported origin and reverse-complement transform. A block crossing FASTA origin is split; an empty allele marks one adjacent base. Local-path intervals enclose sequence differences across the compared alternatives; they are not claimed to be minimal SV breakpoints. A `graph_end` row marks an open end, not an estimated gap length. The `evidence` field points to a `locus_N` or `circle_family_N_block_N` in `paired_path_resolution`; those entries retain path identities, scores and support. Alternative spellings remain in `path_candidates.fasta` and `complete_path_candidates.fasta`.
 
-Permissively collapsed bubbles also add a `collapsed_bubble_component_unresolved`
-interval across the affected primary sequence. This component-wide flag is not
-a localized breakpoint or a claim that every base is erroneous. It remains
-uncertainty when passed to gene-quality checks.
+A local-path interval is `minor_path_retained` when the strict rules chose the
+route and kept a minor one on record. A majority choice is
+`majority_path_site_unresolved` when every alternative to the same target
+differs from it at one small site (up to three substituted bases, or an indel of
+up to six bases whose shorter side has at most two, between at least 20 shared
+bases on each side), and `majority_path_structure_unresolved` otherwise.
+
+Permissively collapsed bubbles add a `collapsed_bubble_alternative` interval
+where each lies on the primary, and the primary's read validation adds
+`low_matching_read_depth` intervals; see [de novo outputs](de_novo.md#outputs-and-status).
+v0.2.2 and earlier instead flagged the whole primary with
+`collapsed_bubble_component_unresolved`. All of these remain uncertainty when
+passed to gene-quality checks.
 
 To carry these intervals into tRNA-Pro coordinates, supply the matching FASTA and `annotate --assembly-ambiguity primary_ambiguity.tsv`. The Rust annotation command writes projected TSV/GFF3 intervals in `annotated.fasta` coordinates and links them to observed genes/NCRs. Source evidence and assembly status are retained. See [the annotation interface](annotation.md#carrying-assembly-uncertainty-into-annotation).
 
-The new `report.json.primary` object records the chosen source, sequence length, graph circularity, uncertainty intervals and `final_verified`. A literal `circular=true` means a complete graph walk is present; `final_verified=false` retains uncertainty about its structure or support. `primary` is null and no primary FASTA is written if there is no candidate of at least k bases. The existing exit codes and final-publication criteria are unchanged: an unresolved run can return 2 and still provide a useful primary sequence. Annotation can then consume this frozen `primary.fasta`; its gene and NCR completeness must not be used to select a different path.
+The new `report.json.primary` object records the chosen source, sequence length, graph circularity, uncertainty intervals and `final_verified`, plus `closure`, `collapsed_bubbles` and `read_validation` (see [de novo outputs](de_novo.md#outputs-and-status)). A literal `circular=true` means a complete graph walk is present; `final_verified=false` retains uncertainty about its structure or support. `primary` is null and no primary FASTA is written if there is no candidate of at least k bases. The existing exit codes and final-publication criteria are unchanged: an unresolved run can return 2 and still provide a useful primary sequence. Annotation can then consume this frozen `primary.fasta`; its gene and NCR completeness must not be used to select a different path.
 
 ### Two-copy direct repeats
 
@@ -153,7 +162,9 @@ Both files use record ID `best_circular`. Coordinates are one-based inclusive
 in that FASTA, before annotation/rotation. The FASTA header states `circular=true`
 and `final_verified=true|false`. Use the matching pair with
 `annotate --assembly-ambiguity best_circular_ambiguity.tsv` so unresolved paths
-and component-wide bubble uncertainty remain visible in gene checks.
+and bubble uncertainty remain visible in gene checks. `report.json.best_circular`
+also carries `closure` and `collapsed_bubbles`; its `read_validation` is
+`not_performed` unless it is also the primary.
 
 This output selects among the enumerated eligible circles; it does not establish
 unique structure, mitochondrial identity or an exhaustive optimum. It can be a

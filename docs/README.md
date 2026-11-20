@@ -199,6 +199,11 @@ Use `cbr` for *C. briggsae* and `ctro` for *C. tropicalis*. Review
 Annotation assesses the supplied sequence and uncertainty; it does not select
 an assembly or independently validate reads, repeat copy number or closure.
 
+For a de novo `primary.fasta`, also pass the run's `report.json` with
+`--assembly-report` to learn whether the primary is complete outside NCR1
+(`claim_level.tsv`); the level always states whether reads join the NCR1
+ends. See [claim level](partial_results.md#claim-level-complete-except-ncr1).
+
 Rotation is optional. `--rotate-to-trna-pro` requires an input interpreted as
 circular and a suitable unique, complete tRNA-Pro anchor. Unmarked mapping
 FASTA records are treated as linear by default; `--topology circular` explicitly

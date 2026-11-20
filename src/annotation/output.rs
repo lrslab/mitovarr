@@ -19,6 +19,7 @@ pub(super) struct Annotated {
     pub ncr: NcrAnalysis,
     pub assembly_evidence: Option<super::uncertainty::Analysis>,
     pub gene_quality: super::quality::Summary,
+    pub claim_level: super::level::ClaimLevel,
 }
 
 fn annotated_header(record: &Record, result: &Annotated) -> String {
@@ -124,12 +125,66 @@ fn segment_text(segments: &[super::Segment]) -> String {
         .collect::<Vec<_>>()
         .join(",")
 }
+/// One row per input record; written only when an assembly report was supplied.
+fn write_claim_levels(out: &Path, records: &[Record], results: &[Annotated]) -> Result<()> {
+    let mut table = BufWriter::new(File::create(out.join("claim_level.tsv"))?);
+    writeln!(table,"contig\tlevel\tstatus\tclosure\tstrict_final_published\tnot_reached\tnot_assessed_reason\trna_length_variants\tflagged_sites_outside_ncr1\tflagged_sites_inside_ncr1\tcollapsed_bubbles_not_placed\tncr1_assembled_bases\tncr1_length\tstatement")?;
+    for (record, result) in records.iter().zip(results) {
+        let level = &result.claim_level;
+        writeln!(
+            table,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            tsv(&record.name),
+            level.level,
+            level.status,
+            level.closure.as_deref().unwrap_or(""),
+            level
+                .strict_final_published
+                .map(|x| x.to_string())
+                .unwrap_or_default(),
+            level
+                .not_reached
+                .iter()
+                .map(|s| tsv(s))
+                .collect::<Vec<_>>()
+                .join(","),
+            level.not_assessed_reason.unwrap_or(""),
+            level
+                .rna_length_variants
+                .iter()
+                .map(|s| tsv(s))
+                .collect::<Vec<_>>()
+                .join(","),
+            level.flagged_sites_outside_ncr1,
+            level.flagged_sites_inside_ncr1,
+            level
+                .collapsed_bubbles_not_placed
+                .map(|x| x.to_string())
+                .unwrap_or_default(),
+            level
+                .ncr1_assembled_bases
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            level.ncr1_length,
+            tsv(&level.statement)
+        )?;
+    }
+    table.flush()?;
+    Ok(())
+}
+
 pub(super) fn write(
     out: &Path,
     records: &[Record],
     results: &[Annotated],
     panel: &Panel,
+    claim_levels: bool,
 ) -> Result<()> {
+    if claim_levels {
+        write_claim_levels(out, records, results)?;
+    }
     let mut gff = BufWriter::new(File::create(out.join("annotations.gff3"))?);
     writeln!(gff,"##gff-version 3\n# model_accession={}\n# coordinates=annotated.fasta; method=homology_assisted; RNA_structure=not_assessed", escape(&panel.accession))?;
     let mut table = BufWriter::new(File::create(out.join("features.tsv"))?);

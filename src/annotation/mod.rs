@@ -2,6 +2,7 @@
 //! module: candidates and selection are frozen before annotation is introduced.
 mod align;
 mod genetic_code;
+mod level;
 pub mod ncr;
 mod output;
 mod quality;
@@ -603,6 +604,17 @@ pub fn run(args: &AnnotationArgs) -> Result<bool> {
         .as_deref()
         .map(|path| uncertainty::read(path, &records))
         .transpose()?;
+    // Read after assembly, like the ambiguity table: evidence about a frozen
+    // sequence, never an input to gene prediction.
+    let assembly_report = args
+        .assembly_report
+        .as_deref()
+        .map(|path| -> Result<serde_json::Value> {
+            let text = fs::read_to_string(path)
+                .with_context(|| format!("cannot read --assembly-report {}", path.display()))?;
+            serde_json::from_str(&text).context("--assembly-report is not a JSON report")
+        })
+        .transpose()?;
     let mut results = Vec::new();
     for (i, record) in records.iter().enumerate() {
         tracing::info!(contig = %record.name, length = record.sequence.len(), "predicting mitochondrial genes");
@@ -658,6 +670,18 @@ pub fn run(args: &AnnotationArgs) -> Result<bool> {
             uncertainty::label_ncr_origins(evidence, &mut ncr);
         }
         let gene_quality = quality::assess(&panel, &prediction, assembly_evidence.as_ref());
+        let claim_level = level::assess(level::Inputs {
+            record,
+            circular,
+            prediction: &prediction,
+            ncr: &ncr,
+            evidence: assembly_evidence.as_ref(),
+            quality: &gene_quality,
+            assembly: assembly_report.as_ref(),
+            table_rows: uncertainty
+                .as_ref()
+                .map(|inputs| uncertainty::rows(inputs, &record.name)),
+        });
         results.push(output::Annotated {
             sequence,
             prediction,
@@ -666,9 +690,16 @@ pub fn run(args: &AnnotationArgs) -> Result<bool> {
             ncr,
             assembly_evidence,
             gene_quality,
+            claim_level,
         });
     }
-    output::write(&args.out, &records, &results, &panel)?;
+    output::write(
+        &args.out,
+        &records,
+        &results,
+        &panel,
+        assembly_report.is_some(),
+    )?;
     let reports: Vec<_> = records
         .iter()
         .zip(&results)
@@ -682,6 +713,7 @@ pub fn run(args: &AnnotationArgs) -> Result<bool> {
                 "ncr": a.ncr,
                 "assembly_evidence": a.assembly_evidence,
                 "gene_quality": a.gene_quality,
+                "claim_level": a.claim_level,
             })
         })
         .collect();
@@ -693,6 +725,7 @@ pub fn run(args: &AnnotationArgs) -> Result<bool> {
             "method": "native_homology_assisted_gene_prediction", "model_accession": panel.accession,
             "genetic_code": 5, "input_fasta": args.fasta,
             "input_assembly_ambiguity": args.assembly_ambiguity,
+            "input_assembly_report": args.assembly_report,
             "assembly_status": "not_modified", "closure_validation": "not_performed",
             "rna_structure": "not_assessed", "records": reports,
         }),

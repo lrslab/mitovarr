@@ -20,6 +20,123 @@ pub(in crate::denovo) struct Primary {
     pub candidate: Candidate,
     pub source: Value,
     pub regions: Vec<Region>,
+    /// Further report fields of this representative: `closure`,
+    /// `collapsed_bubbles` and `read_validation`. None of them selects it.
+    pub details: serde_json::Map<String, Value>,
+}
+
+/// A linear primary whose two ends the path graph joins within this many
+/// added bases is reported as `joined_by_reads`. The join is never applied.
+pub(in crate::denovo) const CLOSURE_MAX_BASES: usize = 2000;
+
+/// Whether the path graph leads from the last segment of a linear walk back to
+/// its first, and the fewest bases it adds between them (negative: the two
+/// ends overlap). `walk` holds the segments that may not be crossed: every
+/// segment the primary spells (anchors and route segments) and their twins,
+/// so a path through the body of the sequence on either strand, including a
+/// second pass through one of its repeats, is not a closure. Overlapping sample k-mers only:
+/// no fragment score, copy number or length is implied.
+fn end_closure(
+    graph: &PathGraph,
+    last: usize,
+    first: usize,
+    walk: &HashSet<usize>,
+    overlap: usize,
+    original_segments: usize,
+) -> Value {
+    let limit = CLOSURE_MAX_BASES + overlap;
+    let mut distance = HashMap::from([(last, 0usize)]);
+    let mut previous = HashMap::<usize, usize>::new();
+    let mut pending = std::collections::BinaryHeap::from([std::cmp::Reverse((0usize, last))]);
+    let mut best: Option<(usize, usize)> = None;
+    while let Some(std::cmp::Reverse((bases, node))) = pending.pop() {
+        if bases > distance[&node] || best.is_some_and(|(found, _)| bases >= found) {
+            continue;
+        }
+        for &next in &graph.outgoing[node] {
+            if next == first {
+                if best.is_none_or(|(found, _)| bases < found) {
+                    best = Some((bases, node));
+                }
+                continue;
+            }
+            if walk.contains(&next) || graph.segments[next].circular {
+                continue;
+            }
+            let added = bases + graph.segments[next].sequence.len().saturating_sub(overlap);
+            if added <= limit && distance.get(&next).is_none_or(|&old| added < old) {
+                distance.insert(next, added);
+                previous.insert(next, node);
+                pending.push(std::cmp::Reverse((added, next)));
+            }
+        }
+    }
+    let rule = "path in the sample path graph (path_graph.gfa) from the last segment of the primary to its first within the base limit, crossing neither strand of the primary's own segments; overlapping sample k-mers only";
+    let Some((bases, mut node)) = best else {
+        return json!({"state":"not_observed",
+            "reason":if graph.outgoing[last].is_empty() {"last_segment_has_no_continuation"} else {"no_path_to_first_segment_within_limit"},
+            "rule":rule,"maximum_bases_between_ends":CLOSURE_MAX_BASES,
+            "claim":"reads do not join the two ends in this graph; the sequence is not shown to be circular"});
+    };
+    let mut path = Vec::new();
+    while node != last {
+        path.push(node);
+        node = previous[&node];
+    }
+    path.reverse();
+    json!({"state":"joined_by_reads","rule":rule,
+        "shortest_path_bases_between_ends":bases as i64 - overlap as i64,
+        "shortest_path_basis":"fewest bases any graph path adds between the ends (negative: the ends overlap); a repeat cycle on or beside the path can add any number of units, so this is not an NCR1 length or gap size",
+        "maximum_bases_between_ends":CLOSURE_MAX_BASES,
+        "path_segments":path.iter().map(|id| id + 1).collect::<Vec<_>>(),
+        "end_bridge_candidate_segments":path.iter().filter(|&&id| id >= original_segments).count(),
+        "claim":"overlapping reads lead from one end to the other; the join is not applied, and its length, repeat copy number and fragment support are not determined; not a verified circle"})
+}
+
+/// The segments of a walk and their reverse-complement twins. A path through
+/// either strand of the primary's own segments is not a closure of its ends.
+fn with_twins(
+    graph: &PathGraph,
+    by_sequence: &HashMap<&[u8], Vec<usize>>,
+    walk: &HashSet<usize>,
+) -> HashSet<usize> {
+    let mut blocked = walk.clone();
+    for &id in walk {
+        let twin = kmer::reverse_complement(&graph.segments[id].sequence);
+        if let Some(ids) = by_sequence.get(twin.as_slice()) {
+            blocked.extend(ids);
+        }
+    }
+    blocked
+}
+
+const SITE_FLANK: usize = 20;
+const SITE_MAX_SUBSTITUTION: usize = 3;
+const SITE_MAX_INDEL: usize = 6;
+const SITE_MAX_SHORT_SIDE: usize = 2;
+
+/// Two routes to the same target that differ at one small site: up to three
+/// substituted bases, or an indel of up to six bases whose shorter side has at
+/// most two, between shared flanks. Anything else is a structural difference.
+fn site_scale(chosen: &[u8], other: &[u8]) -> bool {
+    let shortest = chosen.len().min(other.len());
+    let prefix = chosen.iter().zip(other).take_while(|(a, b)| a == b).count();
+    let suffix = chosen
+        .iter()
+        .rev()
+        .zip(other.iter().rev())
+        .take(shortest - prefix)
+        .take_while(|(a, b)| a == b)
+        .count();
+    if prefix < SITE_FLANK || suffix < SITE_FLANK {
+        return false;
+    }
+    let (a, b) = (
+        chosen.len() - prefix - suffix,
+        other.len() - prefix - suffix,
+    );
+    (a == b && a <= SITE_MAX_SUBSTITUTION)
+        || (a.abs_diff(b) <= SITE_MAX_INDEL && a.min(b) <= SITE_MAX_SHORT_SIDE)
 }
 
 /// Project an interval in a rotated, possibly reverse-complemented view back
@@ -404,12 +521,15 @@ fn repeat_pairings(
     (inferred, reports)
 }
 
+/// `original_segments` separates sample-graph segments from the end-bridge
+/// candidates appended after them; it only labels the reported closure path.
 pub(super) fn local_candidates(
     graph: &PathGraph,
     loci: &[Locus],
     anchors: &[usize],
     overlap: usize,
     settings: &GraphSettings,
+    original_segments: usize,
 ) -> (Vec<Primary>, Vec<Option<usize>>, Vec<Value>) {
     let mut choices: Vec<_> = loci.iter().map(|l| choose(l, settings)).collect();
     let blocked = reciprocal_choices(graph, loci, overlap, &mut choices);
@@ -432,6 +552,10 @@ pub(super) fn local_candidates(
         .collect();
     let mut consumed = HashSet::new();
     let mut assembled = BTreeMap::new();
+    let mut by_sequence = HashMap::<&[u8], Vec<usize>>::new();
+    for (id, segment) in graph.segments.iter().enumerate() {
+        by_sequence.entry(&segment.sequence).or_default().push(id);
+    }
     for first in starts {
         if consumed.contains(&first) {
             continue;
@@ -441,8 +565,10 @@ pub(super) fn local_candidates(
         let mut circular = false;
         let mut regions = Vec::new();
         let mut joins = Vec::new();
+        let mut walk = HashSet::new();
         loop {
             consumed.insert(node);
+            walk.insert(node);
             let Some(&(li, ri)) = connections.get(&node) else {
                 break;
             };
@@ -493,12 +619,20 @@ pub(super) fn local_candidates(
                     .unwrap_or((prefix, route.sequence.len() - suffix));
                 if prefix < end || locus.routes.iter().any(|r| r.sequence != route.sequence) {
                     let offset = sequence.len() - route.left_end - overlap;
+                    // A majority choice among routes that differ at one small
+                    // site leaves that site open, not the local structure.
+                    let one_site = locus.routes.iter().all(|r| {
+                        r.sequence == route.sequence
+                            || (r.to == route.to && site_scale(&route.sequence, &r.sequence))
+                    });
                     regions.push(Region {
                         start: offset + prefix,
                         end: offset + end,
                         evidence: format!("locus_{}", li + 1),
                         reason: if locus.selected == Some(ri) {
                             "minor_path_retained"
+                        } else if one_site {
+                            "majority_path_site_unresolved"
                         } else {
                             "majority_path_structure_unresolved"
                         },
@@ -513,6 +647,7 @@ pub(super) fn local_candidates(
             for &id in &route.nodes {
                 sequence.extend_from_slice(&graph.segments[id].sequence[overlap..]);
                 consumed.insert(id);
+                walk.insert(id);
             }
             if route.to == first {
                 circular = true;
@@ -522,8 +657,20 @@ pub(super) fn local_candidates(
             sequence.extend_from_slice(&graph.segments[route.to].sequence[overlap..]);
             node = route.to;
         }
+        let mut details = serde_json::Map::new();
         if !circular {
             add_open_ends(&mut regions, sequence.len());
+            details.insert(
+                "closure".into(),
+                end_closure(
+                    graph,
+                    node,
+                    first,
+                    &with_twins(graph, &by_sequence, &walk),
+                    overlap,
+                    original_segments,
+                ),
+            );
         }
         let (sequence, regions) = normalize_regions(sequence, circular, regions);
         assembled
@@ -532,6 +679,7 @@ pub(super) fn local_candidates(
                 candidate: Candidate { sequence, circular },
                 source: json!({"type":"joined_graph_paths","joins":joins}),
                 regions,
+                details,
             });
     }
     for (id, segment) in graph.segments.iter().enumerate() {
@@ -540,8 +688,20 @@ pub(super) fn local_candidates(
         }
         let sequence = normalize(&segment.sequence, segment.circular);
         let mut regions = Vec::new();
+        let mut details = serde_json::Map::new();
         if !segment.circular {
             add_open_ends(&mut regions, sequence.len());
+            details.insert(
+                "closure".into(),
+                end_closure(
+                    graph,
+                    id,
+                    id,
+                    &with_twins(graph, &by_sequence, &HashSet::from([id])),
+                    overlap,
+                    original_segments,
+                ),
+            );
         }
         assembled
             .entry((sequence.clone(), segment.circular))
@@ -552,6 +712,7 @@ pub(super) fn local_candidates(
                 },
                 source: json!({"type":"graph_segment","segment":id+1}),
                 regions,
+                details,
             });
     }
     (assembled.into_values().collect(), choices, pairings)
@@ -587,12 +748,18 @@ fn support_mass(candidate: &Candidate, counts: &graph_kmer::Map<u32>, k: usize) 
         .sum()
 }
 
+/// Low-support intervals of the selected primary and its `read_validation` report.
+pub(in crate::denovo) type PrimaryValidation = (Vec<Region>, Value);
+
+/// `validate` runs once, on the selected primary only, after selection. It
+/// cannot change which representative is selected or its sequence.
 pub(in crate::denovo) fn write_outputs(
     candidates: Vec<Primary>,
     counts: &graph_kmer::Map<u32>,
     k: usize,
     out: &Path,
     final_candidate: Option<&Candidate>,
+    validate: &mut dyn FnMut(&Candidate) -> Result<PrimaryValidation>,
 ) -> Result<(Value, Value)> {
     // Whole-cycle likelihood has already chosen ONE representative per family.
     // Mass chooses the main component, never the repeat count within a family.
@@ -608,9 +775,10 @@ pub(in crate::denovo) fn write_outputs(
                 candidate: c.clone(),
                 source: json!({"type":"validated_candidate"}),
                 regions: Vec::new(),
+                details: serde_json::Map::new(),
             });
     }
-    let ranked: Vec<_> = unique
+    let mut ranked: Vec<_> = unique
         .into_values()
         .filter(|p| p.candidate.sequence.len() >= k)
         .map(|mut p| {
@@ -631,8 +799,16 @@ pub(in crate::denovo) fn write_outputs(
             std::cmp::Reverse(p.candidate.sequence.clone()),
         )
     };
-    let selected = ranked.iter().max_by_key(|p| rank(p));
-    let primary = if let Some((p, mass, verified)) = selected {
+    let selected = (0..ranked.len()).max_by_key(|&i| rank(&ranked[i]));
+    if let Some(i) = selected {
+        let (regions, report) = validate(&ranked[i].0.candidate)?;
+        let p = &mut ranked[i].0;
+        p.regions.extend(regions);
+        p.regions
+            .sort_by_key(|r| (r.start, r.end, r.evidence.clone()));
+        p.details.insert("read_validation".into(), report);
+    }
+    let primary = if let Some((p, mass, verified)) = selected.map(|i| &ranked[i]) {
         write_selected(p, *mass, *verified, out, "primary")?
     } else {
         write_ambiguity(out, "primary", &[])?;
@@ -706,7 +882,7 @@ fn write_selected(
         )],
     )?;
     write_ambiguity(out, id, &primary.regions)?;
-    Ok(json!({
+    let mut report = json!({
         "file":file,"ambiguity_file":format!("{id}_ambiguity.tsv"),"length":c.sequence.len(),
         "circular":c.circular,"final_verified":verified,"source":primary.source,
         "selection":"whole-cycle fragment score within a family; distinct sample k-mer support mass between components; validated final candidate takes precedence",
@@ -714,7 +890,18 @@ fn write_selected(
         "uncertainty_intervals":primary.regions.iter().map(|r|json!({"start":r.start+1,"end":r.end,"evidence":r.evidence,"reason":r.reason,"alternatives":r.alternatives})).collect::<Vec<_>>(),
         "interval_coordinates":format!("one-based inclusive in {file}, before annotation or tRNA-Pro rotation; empty alleles mark one adjacent base"),
         "structural_uniqueness_claim":false,
-    }))
+        "closure":if c.circular {
+            json!({"state":"circle","verified":verified,
+                "claim":if verified {"verified circle: the strict final criteria passed"} else {"circular graph path or cycle candidate; the strict final criteria did not pass"}})
+        } else {
+            json!({"state":"not_assessed","reason":"no_closure_search_for_this_source"})
+        },
+        "read_validation":{"status":"not_performed","reason":"only the selected primary is validated"},
+    });
+    for (field, value) in &primary.details {
+        report[field] = value.clone();
+    }
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -736,7 +923,13 @@ mod tests {
             },
             source,
             regions: Vec::new(),
+            details: serde_json::Map::new(),
         }
+    }
+
+    /// Selection and file tests do not read FASTQ: no intervals, a fixed report.
+    fn unvalidated(_: &Candidate) -> Result<PrimaryValidation> {
+        Ok((Vec::new(), json!({"status":"test_not_performed"})))
     }
 
     fn add_counts(counts: &mut graph_kmer::Map<u32>, candidate: &Candidate, count: u32, k: usize) {
@@ -891,8 +1084,15 @@ mod tests {
         assert!(
             support_mass(&best.candidate, &counts, k) > support_mass(&weaker.candidate, &counts, k)
         );
-        let (primary, circle) =
-            write_outputs(vec![linear, weaker, best], &counts, k, &out, None).unwrap();
+        let (primary, circle) = write_outputs(
+            vec![linear, weaker, best],
+            &counts,
+            k,
+            &out,
+            None,
+            &mut unvalidated,
+        )
+        .unwrap();
         assert_eq!(primary["circular"], false);
         assert_eq!(circle["status"], "selected");
         assert_eq!(circle["eligible_representative_count"], 2);
@@ -944,8 +1144,15 @@ mod tests {
             if reversed {
                 candidates.reverse();
             }
-            let (_, circle) =
-                write_outputs(candidates, &graph_kmer::Map::default(), 15, out, None).unwrap();
+            let (_, circle) = write_outputs(
+                candidates,
+                &graph_kmer::Map::default(),
+                15,
+                out,
+                None,
+                &mut unvalidated,
+            )
+            .unwrap();
             assert_eq!(circle["canonical_kmer_support_mass"], 0);
             assert_eq!(
                 crate::io::fasta::load_reference(&out.join("best_circular.fasta"), None)
@@ -977,6 +1184,7 @@ mod tests {
             15,
             &out,
             None,
+            &mut unvalidated,
         )
         .unwrap();
         assert_eq!(primary["circular"], false);
@@ -1012,6 +1220,7 @@ mod tests {
             },
             source: json!({"type":"joined_graph_paths"}),
             regions: Vec::new(),
+            details: serde_json::Map::new(),
         }];
         let heavy_circle = representative(
             b"TCCGCTACTAACGTCCAGGTCTATGACCGTCATGCATA",
@@ -1025,8 +1234,15 @@ mod tests {
                 > support_mass(&final_candidate, &counts, 15)
         );
         alternatives.push(heavy_circle);
-        let (report, circle) =
-            write_outputs(alternatives, &counts, 15, &out, Some(&final_candidate)).unwrap();
+        let (report, circle) = write_outputs(
+            alternatives,
+            &counts,
+            15,
+            &out,
+            Some(&final_candidate),
+            &mut unvalidated,
+        )
+        .unwrap();
         assert_eq!(report["final_verified"], true);
         assert_eq!(report["circular"], true);
         assert_eq!(circle["status"], "selected");
@@ -1046,6 +1262,333 @@ mod tests {
         );
         std::fs::remove_dir_all(&out).unwrap();
     }
+    fn closure_graph(lengths: &[usize], outgoing: Vec<Vec<usize>>) -> PathGraph {
+        use super::super::super::threading::Segment;
+        PathGraph {
+            segments: lengths
+                .iter()
+                .map(|&n| Segment {
+                    sequence: vec![b'A'; n],
+                    circular: false,
+                })
+                .collect(),
+            outgoing,
+        }
+    }
+
+    #[test]
+    fn end_closure_reports_the_shortest_graph_path_and_never_a_path_through_the_body() {
+        let overlap = 62;
+        // 0 is the first segment and 1 the last; 2 and 3 are graph segments
+        // between the ends, 4 is an end-bridge candidate appended after them.
+        let graph = closure_graph(
+            &[400, 400, 300, 100, 80],
+            vec![vec![1], vec![2, 3, 4], vec![0], vec![0], vec![0]],
+        );
+        let walk = HashSet::from([0, 1]);
+        let joined = end_closure(&graph, 1, 0, &walk, overlap, 4);
+        assert_eq!(joined["state"], "joined_by_reads");
+        // The 80-base candidate adds 18 bases and overlaps the first segment by 62.
+        assert_eq!(joined["shortest_path_bases_between_ends"], 80 - 2 * 62);
+        assert_eq!(joined["path_segments"], json!([5]));
+        assert_eq!(joined["end_bridge_candidate_segments"], 1);
+        assert_eq!(joined["maximum_bases_between_ends"], CLOSURE_MAX_BASES);
+        // A direct link is two ends that overlap by k-1.
+        let direct = closure_graph(&[400, 400], vec![vec![1], vec![0]]);
+        let joined = end_closure(&direct, 1, 0, &walk, overlap, 2);
+        assert_eq!(joined["shortest_path_bases_between_ends"], -62);
+        assert_eq!(joined["path_segments"], json!([]));
+        // The only path crosses another anchor of the same sequence: that is a
+        // route through its body, not a closure of its ends.
+        let through = closure_graph(&[400, 400, 300], vec![vec![2], vec![2], vec![0]]);
+        let blocked = end_closure(&through, 1, 0, &HashSet::from([0, 1, 2]), overlap, 3);
+        assert_eq!(blocked["state"], "not_observed");
+        assert_eq!(blocked["reason"], "no_path_to_first_segment_within_limit");
+        let open = end_closure(&through, 1, 0, &HashSet::from([0, 1]), overlap, 3);
+        assert_eq!(open["state"], "joined_by_reads");
+        assert_eq!(open["shortest_path_bases_between_ends"], 300 - 2 * 62);
+        // No continuation at all.
+        let dead = closure_graph(&[400, 400], vec![vec![1], vec![]]);
+        let none = end_closure(&dead, 1, 0, &walk, overlap, 2);
+        assert_eq!(none["state"], "not_observed");
+        assert_eq!(none["reason"], "last_segment_has_no_continuation");
+        assert!(none.get("shortest_path_bases_between_ends").is_none());
+    }
+
+    #[test]
+    fn a_path_through_the_reverse_strand_of_the_primary_is_not_a_closure() {
+        use super::super::super::threading::Segment;
+        let mut state = 0x2545f4914f6cdd1du64;
+        let mut dna = |n: usize| -> Vec<u8> {
+            (0..n)
+                .map(|_| {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    b"ACGT"[(state >> 32) as usize & 3]
+                })
+                .collect()
+        };
+        let (first, last, bridge) = (dna(300), dna(300), dna(100));
+        // 0 -> 1 is the primary; 2 and 3 are its reverse twins; 4 is unique.
+        let graph = PathGraph {
+            segments: [
+                first.clone(),
+                last.clone(),
+                kmer::reverse_complement(&first),
+                kmer::reverse_complement(&last),
+                bridge,
+            ]
+            .into_iter()
+            .map(|sequence| Segment {
+                sequence,
+                circular: false,
+            })
+            .collect(),
+            outgoing: vec![vec![1], vec![2, 4], vec![0], vec![2], vec![3]],
+        };
+        let mut by_sequence = HashMap::<&[u8], Vec<usize>>::new();
+        for (id, segment) in graph.segments.iter().enumerate() {
+            by_sequence.entry(&segment.sequence).or_default().push(id);
+        }
+        let walk = HashSet::from([0, 1]);
+        let blocked = with_twins(&graph, &by_sequence, &walk);
+        assert_eq!(blocked, HashSet::from([0, 1, 2, 3]));
+        // Without the twins, 1 -> 2 -> 0 would join the ends through the
+        // primary's own first segment read on the other strand.
+        assert_eq!(
+            end_closure(&graph, 1, 0, &walk, 62, 5)["state"],
+            "joined_by_reads"
+        );
+        let closure = end_closure(&graph, 1, 0, &blocked, 62, 5);
+        assert_eq!(closure["state"], "not_observed", "{closure}");
+        assert_eq!(closure["reason"], "no_path_to_first_segment_within_limit");
+    }
+
+    /// Review finding 2 (2026-11-13): a repeat route segment R that the primary
+    /// A, R, B spells may not be crossed again to join B back to A. Test
+    /// written by the reviewing session.
+    #[test]
+    fn a_path_through_a_route_segment_of_the_primary_is_not_a_closure() {
+        let (graph, mut loci) = repeat_fixture(
+            &[b"CTACCG", b"GCATTC", b"CAGGTG"],
+            &[vec![1], vec![2, 0], vec![1]],
+            &[1],
+        );
+        let n = 3;
+        let locus = |from: usize| loci.iter().position(|l| l.from == from).unwrap();
+        let (a, b, b_twin) = (locus(0), locus(2), locus(n));
+        let to_b = loci[a].routes.iter().position(|r| r.to == 2).unwrap();
+        loci[a].selected = Some(to_b);
+        // The locus leaving B (and its twin, leaving the reverse of A) is not
+        // decided, so the primary stays linear: A, R, B.
+        loci[b].exhausted = true;
+        loci[b_twin].exhausted = true;
+        let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
+        let (primaries, _, _) = local_candidates(
+            &graph,
+            &loci,
+            &anchors,
+            1,
+            &settings(),
+            graph.segments.len(),
+        );
+        let expected = normalize(b"CTACCGCATTCAGGTG", false);
+        let primary = primaries
+            .iter()
+            .find(|p| p.candidate.sequence == expected && !p.candidate.circular)
+            .expect("linear primary A, R, B");
+        let closure = &primary.details["closure"];
+        assert_eq!(closure["state"], "not_observed", "{closure}");
+    }
+
+    #[test]
+    fn end_closure_is_bounded_by_added_bases_not_by_segment_count() {
+        let overlap = 62;
+        let walk = HashSet::from([0, 1]);
+        // 2000 bases between the ends are accepted, 2001 are not.
+        for (between, state) in [(2000, "joined_by_reads"), (2001, "not_observed")] {
+            let graph = closure_graph(
+                &[400, 400, between + 2 * overlap],
+                vec![vec![1], vec![2], vec![0]],
+            );
+            let closure = end_closure(&graph, 1, 0, &walk, overlap, 3);
+            assert_eq!(closure["state"], state, "{between}");
+            if state == "joined_by_reads" {
+                assert_eq!(closure["shortest_path_bases_between_ends"], between);
+            }
+        }
+        // Many short segments within the bound, and a repeat loop on the way.
+        let graph = closure_graph(
+            &[400, 400, 72, 72, 72, 72],
+            vec![vec![1], vec![2], vec![3, 2], vec![4], vec![5, 3], vec![0]],
+        );
+        let closure = end_closure(&graph, 1, 0, &walk, overlap, 6);
+        assert_eq!(closure["state"], "joined_by_reads");
+        assert_eq!(closure["path_segments"], json!([3, 4, 5, 6]));
+        assert_eq!(
+            closure["shortest_path_bases_between_ends"],
+            4 * (72 - 62) - 62
+        );
+    }
+
+    #[test]
+    fn site_scale_separates_one_small_site_from_a_structural_difference() {
+        let flank = |n: u64| -> Vec<u8> {
+            (0..40u64)
+                .map(|i| b"ACGT"[((i * 7 + n * 3 + i / 3) % 4) as usize])
+                .collect()
+        };
+        let (left, right) = (flank(1), flank(2));
+        let with = |core: &[u8]| [&left[..], core, &right[..]].concat();
+        let site = |a: &[u8], b: &[u8]| site_scale(&with(a), &with(b));
+        // Up to three substituted bases.
+        assert!(site(b"A", b"C"));
+        assert!(site(b"AGA", b"CTC"));
+        assert!(!site(b"AGAG", b"CTCT"));
+        // An indel of up to six bases whose shorter side has at most two.
+        assert!(site(b"", b"TTTTTT"));
+        assert!(site(b"GG", b"GGACGTAC"));
+        assert!(!site(b"", b"TTTTTTT"));
+        assert!(!site(b"GAG", b"CTCAAAA"));
+        // A longer or divergent stretch is structure, however similar its ends.
+        assert!(!site(&[b'A'; 40], &[b'C'; 40]));
+        assert!(!site(&[b'A'; 40], b""));
+        // Without a shared flank on both sides the routes leave differently.
+        let chosen = with(b"A");
+        let mut other = with(b"C");
+        other.truncate(other.len() - 30);
+        assert!(!site_scale(&chosen, &other));
+        // Ten shared bases on the left are not a flank.
+        assert!(!site_scale(&chosen[30..], &with(b"C")[30..]));
+        assert!(site_scale(&chosen[20..], &with(b"C")[20..]));
+    }
+
+    #[test]
+    fn a_linear_primary_reports_whether_the_graph_joins_its_ends() {
+        // One unique segment whose end leads through a tandem unit back to its
+        // own start: the unit count is open, so no join is made.
+        let (graph, loci) = repeat_fixture(&[b"CTTAGC", b"CGGAC"], &[vec![1], vec![1, 0]], &[1]);
+        let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
+        let (primaries, choices, _) = local_candidates(
+            &graph,
+            &loci,
+            &anchors,
+            1,
+            &settings(),
+            graph.segments.len(),
+        );
+        assert!(choices.iter().all(Option::is_none));
+        let unique = normalize(b"CTTAGC", false);
+        let primary = primaries
+            .iter()
+            .find(|p| p.candidate.sequence == unique)
+            .unwrap();
+        assert!(!primary.candidate.circular);
+        let closure = &primary.details["closure"];
+        assert_eq!(closure["state"], "joined_by_reads");
+        // Five unit bases, less the base shared with each end.
+        assert_eq!(closure["shortest_path_bases_between_ends"], 3);
+        assert_eq!(closure["end_bridge_candidate_segments"], 0);
+        assert_eq!(
+            primary
+                .regions
+                .iter()
+                .filter(|r| r.reason == "open_graph_end")
+                .count(),
+            2
+        );
+        // Without the return link the same sequence is not joined.
+        let (graph, loci) = repeat_fixture(&[b"CTTAGC", b"CGGAC"], &[vec![1], vec![1]], &[1]);
+        let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
+        let (primaries, _, _) = local_candidates(
+            &graph,
+            &loci,
+            &anchors,
+            1,
+            &settings(),
+            graph.segments.len(),
+        );
+        let primary = primaries
+            .iter()
+            .find(|p| p.candidate.sequence == unique)
+            .unwrap();
+        assert_eq!(primary.details["closure"]["state"], "not_observed");
+    }
+
+    #[test]
+    fn read_validation_marks_only_the_selected_primary_after_selection() {
+        let out = output_dir("validated-primary");
+        let k = 15;
+        let mut linear = representative(
+            b"GGCAGGACTCGGATCAGTTGGCCAGTAAGTCCAGCATAGCCAGT",
+            false,
+            json!({"type":"joined_graph_paths"}),
+        );
+        linear.regions = vec![Region {
+            start: 0,
+            end: 1,
+            evidence: "graph_end".into(),
+            reason: "open_graph_end",
+            alternatives: 0,
+        }];
+        linear.details.insert(
+            "closure".into(),
+            json!({"state":"joined_by_reads","shortest_path_bases_between_ends":12}),
+        );
+        let circle = representative(
+            b"ACGTTAGGCATCTGAACCTGTAGTCCGATCAATGCG",
+            true,
+            json!({"type":"graph_segment"}),
+        );
+        let expected = linear.candidate.sequence.clone();
+        let mut counts = graph_kmer::Map::default();
+        add_counts(&mut counts, &circle.candidate, 8, k);
+        add_counts(&mut counts, &linear.candidate, 100, k);
+        let mut validated = Vec::new();
+        let mut validate = |candidate: &Candidate| {
+            validated.push(candidate.sequence.clone());
+            Ok((
+                vec![Region {
+                    start: 0,
+                    end: 3,
+                    evidence: "read_validation_1".into(),
+                    reason: "low_matching_read_depth",
+                    alternatives: 0,
+                }],
+                json!({"status":"performed","low_depth_bases":3}),
+            ))
+        };
+        let (primary, best) =
+            write_outputs(vec![circle, linear], &counts, k, &out, None, &mut validate).unwrap();
+        // Called once, for the selected sequence.
+        assert_eq!(validated, vec![expected.clone()]);
+        assert_eq!(primary["circular"], false);
+        assert_eq!(primary["read_validation"]["status"], "performed");
+        assert_eq!(primary["closure"]["state"], "joined_by_reads");
+        assert_eq!(primary["closure"]["shortest_path_bases_between_ends"], 12);
+        let table = std::fs::read_to_string(out.join("primary_ambiguity.tsv")).unwrap();
+        assert_eq!(
+            table,
+            "sequence\tstart\tend\tevidence\treason\talternatives\n\
+             primary\t1\t1\tgraph_end\topen_graph_end\t0\n\
+             primary\t1\t3\tread_validation_1\tlow_matching_read_depth\t0\n"
+        );
+        assert_eq!(
+            crate::io::fasta::load_reference(&out.join("primary.fasta"), None)
+                .unwrap()
+                .sequence,
+            expected
+        );
+        // The other representative is neither validated nor marked.
+        assert_eq!(best["circular"], true);
+        assert_eq!(best["read_validation"]["status"], "not_performed");
+        assert_eq!(best["closure"]["state"], "circle");
+        assert_eq!(best["closure"]["verified"], false);
+        assert!(best["uncertainty_intervals"].as_array().unwrap().is_empty());
+        std::fs::remove_dir_all(out).unwrap();
+    }
+
     fn reciprocal_fixture() -> (PathGraph, Vec<Locus>) {
         use super::super::super::threading::Segment;
         let forward = [b"AGGCA".to_vec(), b"ATCGA".to_vec(), b"AACCT".to_vec()];
@@ -1166,8 +1709,14 @@ mod tests {
             &[1],
         );
         let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
-        let (primaries, choices, reports) =
-            local_candidates(&graph, &loci, &anchors, 1, &settings());
+        let (primaries, choices, reports) = local_candidates(
+            &graph,
+            &loci,
+            &anchors,
+            1,
+            &settings(),
+            graph.segments.len(),
+        );
         let expected = normalize(b"TTACCGTAGAAATCGTAGTCAA", false);
         let joined: Vec<_> = primaries
             .iter()
@@ -1214,14 +1763,28 @@ mod tests {
         loci[entrance].spanning[skip] = 20;
         loci[entrance].strong_votes[skip][1 - skip] = 20;
         let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
-        let (_, choices, reports) = local_candidates(&graph, &loci, &anchors, 1, &settings());
+        let (_, choices, reports) = local_candidates(
+            &graph,
+            &loci,
+            &anchors,
+            1,
+            &settings(),
+            graph.segments.len(),
+        );
         assert_eq!(choices[entrance], Some(skip));
         assert!(reports.is_empty());
         // An exhausted search in the other strand view of a join blocks it.
         let (graph, mut loci) = repeat_fixture(&shape.0, &shape.1, &[1]);
         let reverse = loci.iter().position(|l| l.from == 6).unwrap();
         loci[reverse].exhausted = true;
-        let (_, choices, reports) = local_candidates(&graph, &loci, &anchors, 1, &settings());
+        let (_, choices, reports) = local_candidates(
+            &graph,
+            &loci,
+            &anchors,
+            1,
+            &settings(),
+            graph.segments.len(),
+        );
         assert!(choices.iter().all(Option::is_none));
         assert_eq!(reports[0]["status"], "conflicting_choice");
     }
@@ -1253,7 +1816,14 @@ mod tests {
         select(&mut loci, 0, 2);
         select(&mut loci, 2, 3);
         let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
-        let (primaries, _, reports) = local_candidates(&graph, &loci, &anchors, 1, &settings());
+        let (primaries, _, reports) = local_candidates(
+            &graph,
+            &loci,
+            &anchors,
+            1,
+            &settings(),
+            graph.segments.len(),
+        );
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0]["status"], "applied");
         assert_eq!(reports[0]["loop_end_segment"], 4);
@@ -1288,7 +1858,14 @@ mod tests {
             &[1],
         );
         let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
-        let (primaries, _, reports) = local_candidates(&graph, &loci, &anchors, 1, &settings());
+        let (primaries, _, reports) = local_candidates(
+            &graph,
+            &loci,
+            &anchors,
+            1,
+            &settings(),
+            graph.segments.len(),
+        );
         assert_eq!(reports[0]["status"], "applied");
         let circles: Vec<_> = primaries.iter().filter(|p| p.candidate.circular).collect();
         assert_eq!(circles.len(), 1);
@@ -1336,8 +1913,14 @@ mod tests {
                     .filter(|(_, l)| [0, 6, 7].contains(&l.from))
                     .all(|(li, _)| blocked.contains(&li)));
                 let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
-                let (primaries, choices, reports) =
-                    local_candidates(&graph, &loci, &anchors, 1, &settings());
+                let (primaries, choices, reports) = local_candidates(
+                    &graph,
+                    &loci,
+                    &anchors,
+                    1,
+                    &settings(),
+                    graph.segments.len(),
+                );
                 assert!(choices.iter().all(Option::is_none));
                 assert_eq!(reports.len(), 1);
                 assert_eq!(reports[0]["status"], "conflicting_choice");
@@ -1370,7 +1953,14 @@ mod tests {
         assert!(blocked.contains(&entrance));
         assert!(choices[entrance].is_none());
         let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
-        let (_, choices, reports) = local_candidates(&graph, &loci, &anchors, 1, &settings());
+        let (_, choices, reports) = local_candidates(
+            &graph,
+            &loci,
+            &anchors,
+            1,
+            &settings(),
+            graph.segments.len(),
+        );
         assert!(choices[entrance].is_none());
         assert_eq!(reports[0]["status"], "conflicting_choice");
     }
@@ -1393,7 +1983,14 @@ mod tests {
             // Spanning evidence without a winning score/vote margin is not a join.
             assert!(loci.iter().all(|l| choose(l, &settings()).is_none()));
             let anchors: Vec<_> = loci.iter().map(|l| l.from).collect();
-            let (_, _, reports) = local_candidates(&graph, &loci, &anchors, 1, &settings());
+            let (_, _, reports) = local_candidates(
+                &graph,
+                &loci,
+                &anchors,
+                1,
+                &settings(),
+                graph.segments.len(),
+            );
             assert_eq!(reports.len(), 1);
             assert_eq!(reports[0]["status"], "applied");
             assert_eq!(

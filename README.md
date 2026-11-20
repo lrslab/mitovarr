@@ -252,6 +252,7 @@ De novo `assemble-baited` / `assemble-seeded` accept the same explicit `--subsam
 mitovarr annotate \
   --fasta runs/AF16_denovo/primary.fasta --species cbr \
   --assembly-ambiguity runs/AF16_denovo/primary_ambiguity.tsv \
+  --assembly-report runs/AF16_denovo/report.json \
   --rotate-to-trna-pro --out runs/AF16_annotation
 ```
 
@@ -263,6 +264,8 @@ The example uses `primary.fasta` because its header records `circular` and `fina
 
 `--assembly-ambiguity` accepts de novo `primary_ambiguity.tsv` or `best_circular_ambiguity.tsv`, local mapping `structural_ambiguity.tsv`, or a previously projected annotation table **with the matching FASTA**. Ordinary pileup `ambiguity.tsv` uses reference coordinates and is not accepted directly.
 
+With the de novo `report.json` of the same run, `--assembly-report` adds the claim level `complete_except_ncr1` for `primary.fasta` (`claim_level.tsv`, `records[].claim_level`). It is reached by one contig with every expected gene once and full length, both ends inside NCR1 (or a circle), no mixed-sample signal and no open structure or low read depth outside NCR1. Alternatives kept on record outside NCR1 (collapsed bubbles, homopolymer families, single-site majority choices, minor routes the strict rules rejected) are counted as flagged sites, not disqualifying. The level always gives the closure state beside it: `circle`, `joined_by_reads` (overlapping reads lead from one end to the other; the join is not applied) or `not_observed`. A `not_observed` primary is never called circular, the NCR1 length is never determined, and the strict status is unchanged. See [claim level](docs/partial_results.md#claim-level-complete-except-ncr1).
+
 NCR1-4 are positional labels derived from observed flanking genes. Short/zero-length gaps, missing flanks and open ends remain in `ncr_loci.tsv`; a species need not have four long NCRs. Annotation does not alter assembly selection or resolve repeats, and automatic cross-sample NCR SV classification is not implemented. See [annotation](docs/annotation.md), [中文规则](docs/annotation.zh-CN.md) and [NCR definitions](docs/ncr.md).
 
 ## Outputs and status
@@ -271,7 +274,8 @@ Files are workflow-dependent; an incomplete or failed stage may produce only a s
 
 | Output | Interpretation |
 | --- | --- |
-| `primary.fasta`, `primary_ambiguity.tsv` | De novo representative and uncertainty intervals, which may cover the entire sequence; may remain unresolved. No primary FASTA is written when no candidate reaches the main k length |
+| `primary.fasta`, `primary_ambiguity.tsv` | De novo representative and its local uncertainty intervals: retained alternatives, open structure, open ends and low read depth; may remain unresolved. No primary FASTA is written when no candidate reaches the main k length |
+| `primary_coverage.tsv` | Matching-base fragment depth of a primary that is not the validated circle; `primary.read_validation` reports it |
 | `best_circular.fasta`, `best_circular_ambiguity.tsv` | Best available eligible de novo ring and matching uncertainty; absent when no eligible ring exists. Selection does not grant verified-complete status |
 | `candidates.fasta`, path candidate FASTAs | Alternative de novo sequences with selection evidence in JSON |
 | `end_bridge_proposals.fasta` | Discovered end connectors, including withheld proposals; eligibility and limits are in JSON |
@@ -285,6 +289,7 @@ Files are workflow-dependent; an incomplete or failed stage may produce only a s
 | `maximum_consensus.fasta`, `maximum_consensus.ambiguity.tsv` | Mapping best-effort mode's primary consensus and matching uncertainty, including unresolved fills |
 | `report.json`, evidence TSVs | Input scope, thresholds, coverage, votes, selection and uncertainty |
 | `gene_quality.tsv` | Annotation checks for every expected gene; NCR1 completeness is not a gate |
+| `claim_level.tsv` | With `annotate --assembly-report`: the `complete_except_ncr1` level, its closure state and the reasons it is not reached |
 | `annotated.fasta`, GFF3, gene/protein FASTAs, NCR tables/FASTA | Independent post-assembly features, sequences and locus states |
 
 Mapping `variants.tsv`, `coverage.tsv`, `ambiguity.tsv`, `uncertainty.tsv` and `base_votes.tsv` describe the original reference-coordinate pileup, even after accepted indels or local replacements change the candidate. They are not recomputed on locally inserted sequence or transformed by annotation rotation. Local `baseline_segments` refer to `reference_candidate.fasta`; `output_segments` refer to `candidate.fasta`. TSV positions and JSON segments are one-based inclusive unless explicitly named as offsets.
@@ -301,7 +306,8 @@ field. `partial_available` identifies a retained sequence, not a quality pass;
 partial result. Exit code 2 alone is not permission to continue. Existing
 strict output contracts remain in force outside the explicit mapping best-effort
 mode described above. Annotation
-adds `records[].gene_quality` and does not promote assemblies to complete.
+adds `records[].gene_quality` and `records[].claim_level` and does not promote
+assemblies to complete.
 
 ## Development
 

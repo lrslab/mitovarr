@@ -99,6 +99,23 @@ pub(super) fn read(path: &Path, records: &[Record]) -> Result<Vec<Input>> {
     Ok(result)
 }
 
+/// One record's rows as read from the table, unprojected.
+pub(super) fn rows(inputs: &[Input], contig: &str) -> Vec<super::level::IntervalRow> {
+    inputs
+        .iter()
+        .filter(|i| i.contig == contig)
+        .map(|i| {
+            (
+                i.segment.start,
+                i.segment.end,
+                i.evidence.clone(),
+                i.reason.clone(),
+                i.alternatives,
+            )
+        })
+        .collect()
+}
+
 fn merge(mut segments: Vec<Segment>) -> Vec<Segment> {
     segments.sort_by_key(|s| (s.start, s.end));
     let mut result: Vec<Segment> = Vec::new();
@@ -235,6 +252,8 @@ pub(super) fn project(
                 )
             }) {
                 "unresolved_path_alternatives"
+            } else if matched.iter().any(|r| r.reason == LOW_DEPTH) {
+                "low_read_depth"
             } else if !matched.is_empty() {
                 "retained_assembly_alternatives"
             } else {
@@ -255,6 +274,9 @@ pub(super) fn project(
         ncr_loci,
     }
 }
+
+/// De novo primary bases below `--min-depth` matching fragments.
+const LOW_DEPTH: &str = "low_matching_read_depth";
 
 /// Mapping maximum-consensus bases filled by sample-graph walks at the existing
 /// span. Their sequence is inferred and their length is a reference-guided prior.

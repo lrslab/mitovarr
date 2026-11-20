@@ -732,10 +732,22 @@ fn primary_minor_indel(core_length: usize, fragment_span: usize, local_only: boo
         .find(|p| p.candidate.sequence == expected)
         .unwrap_or_else(|| panic!("{:#}", result.report));
     assert!(!primary.candidate.circular);
+    // The minor route differs by a two-base insertion: one open site, not an
+    // open structure.
     assert!(primary
         .regions
         .iter()
-        .any(|r| r.reason == "majority_path_structure_unresolved" && r.alternatives == 1));
+        .any(|r| r.reason == "majority_path_site_unresolved" && r.alternatives == 1));
+    assert!(primary
+        .regions
+        .iter()
+        .all(|r| r.reason != "majority_path_structure_unresolved"));
+    // Nothing leads from the last segment back to the first.
+    assert_eq!(primary.details["closure"]["state"], "not_observed");
+    assert_eq!(
+        primary.details["closure"]["reason"],
+        "last_segment_has_no_continuation"
+    );
     assert!(result.supported_cycles.is_empty());
     let alternatives = fs::read_to_string(dir.0.join("path_candidates.fasta")).unwrap();
     assert_eq!(

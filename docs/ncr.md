@@ -112,7 +112,9 @@ alongside the sequence and written to separate `assembly_ambiguity.tsv` and
 `assembly_ambiguity.gff3` files. The JSON record's `assembly_evidence.ncr_loci`
 keeps each NCR's annotation status and path-evidence status separate. A bounded,
 N-free `annotated` NCR can still have `unresolved_path_alternatives`; conversely,
-`no_reported_path_ambiguity` does not certify repeat structure. See the
+`no_reported_path_ambiguity` does not certify repeat structure. `low_read_depth`
+means a de novo primary's read validation found bases in the locus below
+`--min-depth` matching fragments. See the
 [coordinate handoff](annotation.md#carrying-assembly-uncertainty-into-annotation).
 
 The evidence association also covers gaps below `--ncr-min-len`, touching genes

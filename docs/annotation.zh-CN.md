@@ -122,6 +122,12 @@ RNA 末端的错配可能被局部比对裁去。被裁去的 1–2 个已调用
 
 mapping 局部组装应传入与 `candidate.fasta` 配套的 `structural_ambiguity.tsv`。旋转后的证据保留在 `assembly_ambiguity.tsv`、GFF3 和 JSON 的 `assembly_evidence.ncr_loci` 中；TSV 列格式未改变。best-effort 的 `maximum_consensus.ambiguity.tsv` 会把在原有跨度内填补的 N 段单独标为 `fixed_span_graph_fill`；与其重叠的位点 `evidence_status` 为 `fixed_span_graph_fill`，`ncr.tsv`/`ncr.gff3` 的 `sequence_origin` 也写为该值，表示这些碱基来自样本图游走、长度沿用参考引导的原有跨度，并非实测长度。若与串联重复行 `tandem_repeat_length_unmeasured`（无读段跨越整个重复）或 `tandem_repeat_length_conflict`（跨越读段与共识长度不符）重叠，位点 `evidence_status` 记为相应值；重复间隔的读段下界见 mapping `report.json` 的 `tandem_repeats`。
 
+## 除 NCR1 外完整（claim level）
+
+`annotate --assembly-report` 读入产生该 `primary.fasta` 的 de novo `report.json`（须同时提供 `--assembly-ambiguity`），并写出 `claim_level.tsv` 与 JSON 的 `records[].claim_level`。等级 `complete_except_ncr1` 的条件：单条 contig（环，或两端都落在 NCR1 内的线性 contig：计为存在的基因（全长，或第 2 条接受的 RNA 长度变体）中起点最靠前与终点最靠后的分别为 tRNA-Ala 与 tRNA-Pro）；每个预期基因恰有一个全长拷贝（两端对齐、仅长度与模型不同的 RNA 计为存在，列入 `rna_length_variants`）；无混合样本信号；NCR1 之外除留档备选（折叠气泡 `collapsed_bubble_alternative`、均聚物家族 `homopolymer_length_family`、单位点多数选择 `majority_path_site_unresolved`、被严格规则否决的次要路径 `minor_path_retained` 与 `minor_cycle_path_retained`）以外没有任何区间，`low_matching_read_depth` 等其他原因均使等级不成立；primary 已完成读段验证。NCR1 外的留档备选只计数，不取消等级。
+
+闭合状态与等级并列报告，但不决定等级：`circle`（环；只有 `strict_final_published=true` 才是已验证的环）、`joined_by_reads`（路径图中重叠读段从一端连到另一端，未实际连接，NCR1 长度未测定）、`not_observed`（读段未连接两端）。`not_observed` 的 primary 不得称为环状或完整基因组。`ncr1_length` 始终为 `not_determined`；等级不改变序列、组装状态或严格判据。详见 [partial results](partial_results.md#claim-level-complete-except-ncr1)。
+
 ### 不完整 CDS 的终止状态
 
 3′ 边界不受支持时，`cds.stop` 为 `partial_or_uncertain`，片段末尾的 T/TA 不再解释为可经 polyadenylation 补全的终止密码子；末尾完整终止密码子仍保留在翻译证据中。截断造成的不完整末端密码子本身不否定 `frame_valid`，但非三倍数比对缺口仍会否定它。`frame_valid` 不代表基因完整，完整性仍要求两个边界均受支持。

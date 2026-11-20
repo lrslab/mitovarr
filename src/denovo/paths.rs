@@ -964,8 +964,14 @@ pub(super) fn resolve(
     }
     let complete_cycles =
         circles::resolve(&mut loci, graph, reads, out, settings, limits, &training)?;
-    let (mut primary_candidates, primary_choices, repeat_pairings) =
-        primary::local_candidates(graph, &loci, &anchor_order, overlap, settings);
+    let (mut primary_candidates, primary_choices, repeat_pairings) = primary::local_candidates(
+        graph,
+        &loci,
+        &anchor_order,
+        overlap,
+        settings,
+        original_segments,
+    );
     primary_candidates.extend(complete_cycles.primaries);
     let mut connections = HashMap::new();
     let mut incoming = HashMap::<usize, usize>::new();

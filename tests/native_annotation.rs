@@ -383,6 +383,13 @@ fn assembly_length_evidence_labels_ncr_loci_without_changing_sequence() {
             "not_assessed",
             "retained_assembly_alternatives",
         ),
+        (
+            format!(
+                "{window}sample\t13420\t13600\tread_validation_1\tlow_matching_read_depth\t0\n"
+            ),
+            "not_assessed",
+            "low_read_depth",
+        ),
     ] {
         let temp = Temp::new();
         let sequence = reference("cel");
@@ -909,4 +916,605 @@ fn rotation_preserves_iupac_ambiguities_outside_the_anchor() {
     assert!(r.applied);
     assert!(r.reverse_complemented);
     assert_eq!(out, [q, b"NBDHVKMWSRY".to_vec()].concat());
+}
+
+/// The pinned cel reference cut inside NCR1 (reference bases 13329..13794), so
+/// a linear contig has NCR1 at both ends: 294 bases before tRNA-Pro and 172
+/// after tRNA-Ala.
+fn contig_cut_in_ncr1() -> Vec<u8> {
+    let reference = reference("cel");
+    [&reference[13500..], &reference[..13500]].concat()
+}
+
+fn assembly_report(length: usize, circular: bool, closure: &str) -> Value {
+    json!({"schema":"mitovar-rust.assembly.v1","backend":"rust-de-bruijn",
+        "status":"unresolved","final_published":false,
+        "mixed_sample":{"status":"not_detected","structural_alternatives":[]},
+        "primary":{"file":"primary.fasta","length":length,"circular":circular,"final_verified":false,
+            "closure":{"state":closure},"read_validation":{"status":"performed"},
+            "collapsed_bubbles":{"local_intervals":[1],"not_placed":[2,3]}}})
+}
+
+struct LevelRun {
+    level: Value,
+    table: Option<String>,
+}
+
+/// Annotate `sequence` as the reported primary and return its claim level.
+fn level_run(sequence: &[u8], topology: &str, rows: &str, report: Option<&Value>) -> LevelRun {
+    level_run_named("primary", sequence, topology, rows, report)
+}
+
+fn level_run_named(
+    name: &str,
+    sequence: &[u8],
+    topology: &str,
+    rows: &str,
+    report: Option<&Value>,
+) -> LevelRun {
+    let temp = Temp::new();
+    let input = temp.0.join("primary.fasta");
+    fs::write(
+        &input,
+        format!(
+            ">{name} circular={} length={} final_verified=false\n{}\n",
+            topology == "circular",
+            sequence.len(),
+            String::from_utf8_lossy(sequence)
+        ),
+    )
+    .unwrap();
+    let evidence = temp.0.join("primary_ambiguity.tsv");
+    let ends = if topology == "linear" {
+        format!(
+            "{name}\t1\t1\tgraph_end\topen_graph_end\t0\n{name}\t{n}\t{n}\tgraph_end\topen_graph_end\t0\n",
+            n = sequence.len()
+        )
+    } else {
+        String::new()
+    };
+    fs::write(
+        &evidence,
+        format!("sequence\tstart\tend\tevidence\treason\talternatives\n{ends}{rows}"),
+    )
+    .unwrap();
+    let out = temp.0.join("annotation");
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_mitovarr"));
+    command
+        .env("PATH", "")
+        .args(["annotate", "--species", "cel", "--rotate-to-trna-pro"])
+        .args(["--topology", topology])
+        .arg("--fasta")
+        .arg(&input)
+        .arg("--assembly-ambiguity")
+        .arg(&evidence)
+        .arg("--out")
+        .arg(&out);
+    if let Some(report) = report {
+        // A run writes the same intervals to its table and its report; a test
+        // that sets the report's own intervals checks a mismatch.
+        let mut report = report.clone();
+        if report["primary"].is_object() && report["primary"].get("uncertainty_intervals").is_none()
+        {
+            report["primary"]["uncertainty_intervals"] = format!("{ends}{rows}")
+                .lines()
+                .map(|line| {
+                    let c: Vec<_> = line.split('\t').collect();
+                    json!({"start":c[1].parse::<u64>().unwrap(),"end":c[2].parse::<u64>().unwrap(),
+                        "evidence":c[3],"reason":c[4],"alternatives":c[5].parse::<u64>().unwrap()})
+                })
+                .collect();
+        }
+        let path = temp.0.join("report.json");
+        fs::write(&path, serde_json::to_vec(&report).unwrap()).unwrap();
+        command.arg("--assembly-report").arg(path);
+    }
+    let result = command.output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let annotation: Value =
+        serde_json::from_slice(&fs::read(out.join("report.json")).unwrap()).unwrap();
+    // The level never changes what annotation says about the assembly.
+    assert_eq!(annotation["assembly_status"], "not_modified");
+    assert_eq!(annotation["closure_validation"], "not_performed");
+    LevelRun {
+        level: annotation["records"][0]["claim_level"].clone(),
+        table: fs::read_to_string(out.join("claim_level.tsv")).ok(),
+    }
+}
+
+/// One-based position 100 bases into a gene of `sequence`, read as linear.
+fn inside(sequence: &[u8], gene: &str) -> usize {
+    let p = Panel::bundled(Species::Cel).unwrap();
+    predict(sequence, &p, false)
+        .features
+        .iter()
+        .find(|f| f.name == gene && f.full_length_supported)
+        .unwrap()
+        .segments[0]
+        .start
+        + 100
+}
+
+#[test]
+fn complete_except_ncr1_is_reached_by_one_contig_whatever_its_closure() {
+    let contig = contig_cut_in_ncr1();
+    let n = contig.len();
+    let cox1 = inside(&contig, "COX1");
+    let nd4 = inside(&contig, "ND4");
+    // Single-site alternatives in two genes; inside NCR1 a tract, an open
+    // structure and the thin depth of the two open ends.
+    let rows = format!(
+        "primary\t{cox1}\t{cox1}\tcollapsed_bubble_7\tcollapsed_bubble_alternative\t1\n\
+         primary\t{nd4}\t{}\tlocus_3\tminor_path_retained\t1\n\
+         primary\t100\t130\thomopolymer_family_2\thomopolymer_length_family\t1\n\
+         primary\t150\t190\tlocus_9\tmajority_path_structure_unresolved\t2\n\
+         primary\t1\t9\tread_validation_1\tlow_matching_read_depth\t0\n\
+         primary\t{}\t{n}\tread_validation_2\tlow_matching_read_depth\t0\n",
+        nd4 + 2,
+        n - 8
+    );
+    for (closure, words) in [
+        ("not_observed", "not shown to be circular"),
+        (
+            "joined_by_reads",
+            "overlapping reads join the two NCR1 ends",
+        ),
+    ] {
+        let run = level_run(
+            &contig,
+            "linear",
+            &rows,
+            Some(&assembly_report(n, false, closure)),
+        );
+        let level = &run.level;
+        assert_eq!(level["level"], "complete_except_ncr1");
+        assert_eq!(level["status"], "reached", "{level:#}");
+        assert_eq!(level["closure"], closure);
+        assert_eq!(level["strict_final_published"], false);
+        assert!(level["not_reached"].as_array().unwrap().is_empty());
+        assert!(level["not_assessed_reason"].is_null());
+        assert!(
+            level["statement"].as_str().unwrap().contains(words),
+            "{level:#}"
+        );
+        // Never a circle or a complete genome for an unjoined contig.
+        if closure == "not_observed" {
+            let statement = level["statement"].as_str().unwrap();
+            assert!(
+                !statement.contains("verified circle") && !statement.contains("complete genome")
+            );
+        }
+        assert_eq!(level["flagged_sites_outside_ncr1"], 2);
+        assert_eq!(level["flagged_sites_inside_ncr1"], 1);
+        assert_eq!(
+            level["flagged_site_reasons_outside_ncr1"],
+            json!({"collapsed_bubble_alternative":1,"minor_path_retained":1})
+        );
+        assert_eq!(level["collapsed_bubbles_not_placed"], 2);
+        assert_eq!(level["ncr1_assembled_bases"], json!([294, 172]));
+        assert_eq!(level["ncr1_length"], "not_determined");
+        assert!(level["rna_length_variants"].as_array().unwrap().is_empty());
+        let table = run.table.unwrap();
+        let rows: Vec<Vec<&str>> = table.lines().map(|l| l.split('\t').collect()).collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0][..5],
+            [
+                "contig",
+                "level",
+                "status",
+                "closure",
+                "strict_final_published"
+            ]
+        );
+        assert_eq!(
+            rows[1][..5],
+            [
+                "primary",
+                "complete_except_ncr1",
+                "reached",
+                closure,
+                "false"
+            ]
+        );
+        assert_eq!(rows[0].len(), rows[1].len());
+        assert_eq!(rows[1][8], "2");
+        assert_eq!(rows[1][11], "294,172");
+        assert_eq!(rows[1][12], "not_determined");
+    }
+}
+
+#[test]
+fn open_structure_low_depth_mixture_and_gene_problems_keep_the_level_out() {
+    let contig = contig_cut_in_ncr1();
+    let n = contig.len();
+    let cox1 = inside(&contig, "COX1");
+    let clean = assembly_report(n, false, "not_observed");
+    let interval = |reason: &str| format!("primary\t{cox1}\t{}\tx_1\t{reason}\t1\n", cox1 + 30);
+    for (rows, expected) in [
+        (
+            interval("majority_path_structure_unresolved"),
+            vec!["open_structure_outside_ncr1:majority_path_structure_unresolved"],
+        ),
+        (
+            interval("topology_inferred_repeat_pairing"),
+            vec!["open_structure_outside_ncr1:topology_inferred_repeat_pairing"],
+        ),
+        (
+            interval("competing_cycle_paths"),
+            vec!["open_structure_outside_ncr1:competing_cycle_paths"],
+        ),
+        (interval("low_matching_read_depth"), vec!["low_read_depth_outside_ncr1"]),
+        // A whole-primary flag of an older assembly cannot be placed.
+        (
+            format!("primary\t1\t{n}\tcollapsed_bubbles_1,2\tcollapsed_bubble_component_unresolved\t2\n"),
+            vec!["open_structure_outside_ncr1:collapsed_bubble_component_unresolved"],
+        ),
+        // A reason this build does not know is open, not a site.
+        (interval("future_reason"), vec!["open_structure_outside_ncr1:future_reason"]),
+        // An interval that starts in NCR1 and runs into tRNA-Pro is outside.
+        (
+            "primary\t280\t300\tread_validation_1\tlow_matching_read_depth\t0\n".to_owned(),
+            vec!["low_read_depth_outside_ncr1"],
+        ),
+    ] {
+        let level = level_run(&contig, "linear", &rows, Some(&clean)).level;
+        assert_eq!(level["status"], "not_reached", "{rows}");
+        assert_eq!(level["not_reached"], json!(expected), "{rows}");
+        assert_eq!(level["closure"], "not_observed");
+        assert!(level["statement"].as_str().unwrap().starts_with("not complete outside NCR1"));
+    }
+    // The same intervals wholly inside NCR1 do not count.
+    for reason in [
+        "majority_path_structure_unresolved",
+        "low_matching_read_depth",
+        "future_reason",
+    ] {
+        let rows = format!("primary\t50\t90\tx_1\t{reason}\t1\n");
+        let level = level_run(&contig, "linear", &rows, Some(&clean)).level;
+        assert_eq!(level["status"], "reached", "{reason}: {level:#}");
+    }
+    // A mixed sample.
+    let mut mixed = clean.clone();
+    mixed["mixed_sample"] =
+        json!({"status":"mixed_sample_signal","structural_alternatives":[{"bypassed_bases":400}]});
+    let level = level_run(&contig, "linear", "", Some(&mixed)).level;
+    assert_eq!(
+        level["not_reached"],
+        json!(["mixed_sample_signal", "structural_mixture"])
+    );
+    // A coding gene with a lost base is a gene problem; nothing else changes.
+    let mut frameshift = contig.clone();
+    frameshift.remove(cox1);
+    let level = level_run(
+        &frameshift,
+        "linear",
+        "",
+        Some(&assembly_report(n - 1, false, "not_observed")),
+    )
+    .level;
+    assert_eq!(level["status"], "not_reached");
+    assert_eq!(level["not_reached"], json!(["gene:COX1"]));
+    // A contig that stops inside the genome does not end in NCR1 on both sides.
+    let short = contig[..n - 2000].to_vec();
+    let level = level_run(
+        &short,
+        "linear",
+        "",
+        Some(&assembly_report(short.len(), false, "not_observed")),
+    )
+    .level;
+    assert_eq!(level["status"], "not_reached");
+    let reasons: Vec<_> = level["not_reached"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r.as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        reasons.contains(&"not_one_contig_ending_in_ncr1".to_owned()),
+        "{reasons:?}"
+    );
+    assert!(
+        reasons.iter().any(|r| r.starts_with("gene:")),
+        "{reasons:?}"
+    );
+}
+
+#[test]
+fn an_rna_length_variant_is_listed_and_does_not_remove_the_level() {
+    let mut contig = contig_cut_in_ncr1();
+    let p = Panel::bundled(Species::Cel).unwrap();
+    let lys = predict(&contig, &p, false)
+        .features
+        .iter()
+        .find(|f| f.name == "tRNA-Lys")
+        .unwrap()
+        .segments[0]
+        .start;
+    // One base lost inside the tRNA: both boundaries still align.
+    contig.remove(lys + 25);
+    let report = assembly_report(contig.len(), false, "not_observed");
+    let level = level_run(&contig, "linear", "", Some(&report)).level;
+    assert_eq!(level["status"], "reached", "{level:#}");
+    assert_eq!(level["rna_length_variants"], json!(["tRNA-Lys"]));
+}
+
+#[test]
+fn a_circle_reaches_the_level_and_only_the_strict_gate_calls_it_verified() {
+    let circle = reference("cel");
+    let n = circle.len();
+    let cox1 = inside(&circle, "COX1");
+    let mut report = assembly_report(n, true, "circle");
+    let level = level_run(&circle, "circular", "", Some(&report)).level;
+    assert_eq!(level["status"], "reached", "{level:#}");
+    assert_eq!(level["closure"], "circle");
+    assert_eq!(level["strict_final_published"], false);
+    assert!(level["statement"]
+        .as_str()
+        .unwrap()
+        .contains("not a verified circle"));
+    assert_eq!(level["ncr1_assembled_bases"], json!([466]));
+    assert_eq!(level["ncr1_length"], "not_determined");
+    // Without rotation a circle cut inside NCR1 still reports one NCR1 total.
+    let split = contig_cut_in_ncr1();
+    let temp = Temp::new();
+    let input = temp.0.join("primary.fasta");
+    fs::write(
+        &input,
+        format!(
+            ">primary circular=true\n{}\n",
+            String::from_utf8_lossy(&split)
+        ),
+    )
+    .unwrap();
+    let evidence = temp.0.join("primary_ambiguity.tsv");
+    fs::write(
+        &evidence,
+        "sequence\tstart\tend\tevidence\treason\talternatives\n",
+    )
+    .unwrap();
+    let assembly = temp.0.join("report.json");
+    let mut split_report = report.clone();
+    split_report["primary"]["uncertainty_intervals"] = json!([]);
+    fs::write(&assembly, serde_json::to_vec(&split_report).unwrap()).unwrap();
+    let out = temp.0.join("annotation");
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_mitovarr"))
+        .args([
+            "annotate",
+            "--species",
+            "cel",
+            "--topology",
+            "circular",
+            "--fasta",
+        ])
+        .arg(&input)
+        .arg("--assembly-ambiguity")
+        .arg(&evidence)
+        .arg("--assembly-report")
+        .arg(&assembly)
+        .arg("--out")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let annotation: Value =
+        serde_json::from_slice(&fs::read(out.join("report.json")).unwrap()).unwrap();
+    let level = &annotation["records"][0]["claim_level"];
+    assert_eq!(level["status"], "reached", "{level:#}");
+    assert_eq!(level["ncr1_assembled_bases"], json!([466]));
+    // Competing cycle paths in a gene are open structure; a minor cycle path is a site.
+    let rows = format!(
+        "primary\t{cox1}\t{}\tcircle_family_1_block_1\tcompeting_cycle_paths\t1\n",
+        cox1 + 4
+    );
+    let level = level_run(&circle, "circular", &rows, Some(&report)).level;
+    assert_eq!(
+        level["not_reached"],
+        json!(["open_structure_outside_ncr1:competing_cycle_paths"])
+    );
+    let rows = format!(
+        "primary\t{cox1}\t{}\tcircle_family_1_block_1\tminor_cycle_path_retained\t1\n",
+        cox1 + 4
+    );
+    let level = level_run(&circle, "circular", &rows, Some(&report)).level;
+    assert_eq!(level["status"], "reached");
+    assert_eq!(level["flagged_sites_outside_ncr1"], 1);
+    // Only the assembly's own strict result makes it a verified circle.
+    report["final_published"] = json!(true);
+    report["primary"]["final_verified"] = json!(true);
+    let level = level_run(&circle, "circular", "", Some(&report)).level;
+    assert_eq!(level["status"], "reached");
+    assert_eq!(level["strict_final_published"], true);
+    assert!(level["statement"]
+        .as_str()
+        .unwrap()
+        .starts_with("verified circle"));
+}
+
+#[test]
+fn the_level_is_not_assessed_without_the_matching_assembly_evidence() {
+    let contig = contig_cut_in_ncr1();
+    let n = contig.len();
+    let clean = assembly_report(n, false, "not_observed");
+    // No report: the field says so and no table is written.
+    let run = level_run(&contig, "linear", "", None);
+    assert_eq!(run.level["status"], "not_assessed");
+    assert_eq!(
+        run.level["not_assessed_reason"],
+        "assembly_report_not_supplied"
+    );
+    assert!(run.level["closure"].is_null());
+    assert!(run.table.is_none());
+    let edit = |change: &dyn Fn(&mut Value)| {
+        let mut report = clean.clone();
+        change(&mut report);
+        report
+    };
+    for (report, topology, reason) in [
+        (
+            edit(&|r| r["schema"] = json!("mitovar-rust.native-mapping.v1")),
+            "linear",
+            "not_a_de_novo_assembly_report",
+        ),
+        (
+            edit(&|r| r["primary"] = Value::Null),
+            "linear",
+            "assembly_has_no_primary",
+        ),
+        (
+            edit(&|r| r["primary"]["length"] = json!(n + 1)),
+            "linear",
+            "input_is_not_the_reported_primary",
+        ),
+        (
+            clean.clone(),
+            "circular",
+            "annotation_topology_differs_from_assembly",
+        ),
+        // A report written before this level existed.
+        (
+            edit(&|r| {
+                r["primary"].as_object_mut().unwrap().remove("closure");
+            }),
+            "linear",
+            "assembly_report_lacks_closure",
+        ),
+        (
+            edit(&|r| {
+                r["primary"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("read_validation");
+            }),
+            "linear",
+            "assembly_report_lacks_primary_read_validation",
+        ),
+        (
+            edit(&|r| r["primary"]["read_validation"]["status"] = json!("resource_limited")),
+            "linear",
+            "primary_read_validation_incomplete",
+        ),
+        (
+            edit(&|r| r["primary"]["closure"] = json!({"state":"not_assessed"})),
+            "linear",
+            "closure_not_assessed",
+        ),
+    ] {
+        let run = level_run(&contig, topology, "", Some(&report));
+        assert_eq!(run.level["status"], "not_assessed", "{reason}");
+        assert_eq!(run.level["not_assessed_reason"], reason);
+        assert!(run.level["not_reached"].as_array().unwrap().is_empty());
+        let table = run.table.unwrap();
+        let row: Vec<_> = table.lines().nth(1).unwrap().split('\t').collect();
+        assert_eq!(row[2], "not_assessed");
+        assert_eq!(row[3], "");
+        assert_eq!(row[6], reason);
+    }
+    // Another record of the same length is not the reported primary.
+    let run = level_run_named("candidate_1", &contig, "linear", "", Some(&clean));
+    assert_eq!(
+        run.level["not_assessed_reason"],
+        "input_is_not_the_reported_primary"
+    );
+    // The report alone is refused: the level needs the interval table.
+    let temp = Temp::new();
+    let input = temp.0.join("primary.fasta");
+    fs::write(
+        &input,
+        format!(">primary\n{}\n", String::from_utf8_lossy(&contig)),
+    )
+    .unwrap();
+    let report = temp.0.join("report.json");
+    fs::write(&report, serde_json::to_vec(&clean).unwrap()).unwrap();
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_mitovarr"))
+        .args(["annotate", "--species", "cel", "--fasta"])
+        .arg(&input)
+        .arg("--assembly-report")
+        .arg(&report)
+        .arg("--out")
+        .arg(temp.0.join("annotation"))
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("--assembly-ambiguity"));
+    assert!(!temp.0.join("annotation").exists());
+}
+
+/// Review finding 1 (2026-11-13): a tRNA-Pro or tRNA-Ala that is an accepted RNA
+/// length variant at a linear end still ends the contig in NCR1 (panel strain
+/// cel ECA1210). Test written by the reviewing session.
+#[test]
+fn an_end_trna_length_variant_still_ends_the_contig_in_ncr1() {
+    let p = Panel::bundled(Species::Cel).unwrap();
+    for gene in ["tRNA-Pro", "tRNA-Ala"] {
+        let mut contig = contig_cut_in_ncr1();
+        let start = predict(&contig, &p, false)
+            .features
+            .iter()
+            .find(|f| f.name == gene)
+            .unwrap()
+            .segments[0]
+            .start;
+        // One base lost inside the tRNA: both boundaries still align.
+        contig.remove(start + 25);
+        let features = predict(&contig, &p, false).features;
+        let hit = features.iter().find(|f| f.name == gene).unwrap();
+        assert_eq!(hit.status, "boundary_complete_length_variant", "{gene}");
+        let report = assembly_report(contig.len(), false, "not_observed");
+        let level = level_run(&contig, "linear", "", Some(&report)).level;
+        assert_eq!(level["rna_length_variants"], json!([gene]), "{level:#}");
+        assert_eq!(level["status"], "reached", "{gene}: {level:#}");
+    }
+}
+
+/// Review finding 4 (2026-11-13): the table must be the report's own. A report
+/// whose read validation found low-depth bases inside COX1, with a table that
+/// lacks that row (for example the v0.2.2 table of the same primary), is not
+/// assessed. Test written by the reviewing session.
+#[test]
+fn a_table_that_does_not_match_the_report_is_not_assessed() {
+    let contig = contig_cut_in_ncr1();
+    let n = contig.len();
+    let cox1 = inside(&contig, "COX1");
+    let mut report = assembly_report(n, false, "not_observed");
+    report["primary"]["read_validation"] = json!({"status":"performed","low_depth_bases":31,
+        "low_depth_intervals":[{"start":cox1,"end":cox1 + 30}]});
+    report["primary"]["uncertainty_intervals"] = json!([
+        {"start":1,"end":1,"evidence":"graph_end","reason":"open_graph_end","alternatives":0},
+        {"start":cox1,"end":cox1 + 30,"evidence":"read_validation_1","reason":"low_matching_read_depth","alternatives":0},
+        {"start":n,"end":n,"evidence":"graph_end","reason":"open_graph_end","alternatives":0}]);
+    let level = level_run(&contig, "linear", "", Some(&report)).level;
+    assert_eq!(level["status"], "not_assessed", "{level:#}");
+    assert_eq!(
+        level["not_assessed_reason"],
+        "assembly_ambiguity_differs_from_report"
+    );
+    // With the matching table the low-depth bases keep the level out.
+    let rows = format!(
+        "primary\t{cox1}\t{}\tread_validation_1\tlow_matching_read_depth\t0\n",
+        cox1 + 30
+    );
+    let level = level_run(&contig, "linear", &rows, Some(&report)).level;
+    assert_eq!(level["status"], "not_reached", "{level:#}");
+    assert_eq!(level["not_reached"], json!(["low_read_depth_outside_ncr1"]));
+    // A report without intervals cannot be matched either.
+    report["primary"]
+        .as_object_mut()
+        .unwrap()
+        .remove("uncertainty_intervals");
+    report["primary"]["uncertainty_intervals"] = Value::Null;
+    let level = level_run(&contig, "linear", &rows, Some(&report)).level;
+    assert_eq!(
+        level["not_assessed_reason"],
+        "assembly_ambiguity_differs_from_report"
+    );
 }

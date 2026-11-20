@@ -67,6 +67,9 @@ pub struct AnnotationArgs {
     /// Project assembly ambiguity intervals from matching FASTA coordinates.
     #[arg(long)]
     pub assembly_ambiguity: Option<PathBuf>,
+    /// De novo report.json of the run that wrote the input primary.fasta; adds the complete-except-NCR1 claim level.
+    #[arg(long, requires = "assembly_ambiguity")]
+    pub assembly_report: Option<PathBuf>,
     /// Minimum intergenic length for NCR intervals; shorter named loci remain in ncr_loci.tsv.
     #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..))]
     pub ncr_min_len: u32,

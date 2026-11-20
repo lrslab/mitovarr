@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- Annotation: new claim level `complete_except_ncr1` for a de novo
+  `primary.fasta`, with `annotate --assembly-report <report.json>` (requires
+  `--assembly-ambiguity`). It is reached by one contig with every expected gene
+  once and full length, both ends inside NCR1 or a circle, no mixed-sample
+  signal, and nothing open or under-read outside NCR1; alternatives kept on
+  record (collapsed bubbles, homopolymer families, single-site majority choices,
+  minor routes the strict rules rejected) are counted, not disqualifying. The closure state (`circle`,
+  `joined_by_reads`, `not_observed`) is always reported beside it and never
+  decides it; NCR1 length is never determined. Writes `claim_level.tsv` and
+  `records[].claim_level` (`not_assessed` without the report). Sequences,
+  assembly status and the strict final criteria are unchanged.
+- De novo: mark each permissively collapsed bubble where it lies on the primary
+  (`collapsed_bubble_alternative`) instead of flagging the whole primary with
+  `collapsed_bubble_component_unresolved`. A bubble is found by its whole k−1
+  junction flanks, or by the 31 flank bases next to the differing bases when
+  later cleanup changed a base further out. `primary.collapsed_bubbles` lists
+  placed and unplaced bubbles. Final publication still counts every bubble of
+  the component.
+- De novo: read-validate the selected primary, linear or circular, with the
+  final validation's matching-base check. Bases below `--min-depth` become
+  `low_matching_read_depth` intervals; `primary.read_validation` and
+  `primary_coverage.tsv` report the depths. This grants nothing. It always
+  runs: for a primary that is not the validated circle it adds one alignment
+  pass over every validation pair, roughly doubling de novo run time (more for
+  error-rich reads).
+- De novo: `primary.closure` reports whether the path graph joins the two ends
+  of a linear primary within 2,000 added bases without crossing any segment
+  the primary spells (`joined_by_reads`, with the shortest path's added bases,
+  which is not a length) or not (`not_observed`). The join is not applied.
+- De novo: a majority-chosen local route whose alternatives differ at one small
+  site is marked `majority_path_site_unresolved`;
+  `majority_path_structure_unresolved` is kept for longer or divergent
+  alternatives.
+- Annotation: NCR locus `evidence_status` gains `low_read_depth`.
+
 ## 0.2.2 - 2026-11-02
 
 - Move macOS CI and release builds to the Apple Silicon `macos-15` runner

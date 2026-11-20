@@ -775,18 +775,35 @@ fn write_graph(out: &Path, unitigs: &[Unitig], k: usize) -> Result<()> {
     Ok(())
 }
 
-/// Full-query gapped placements in both orientations; count quality-filtered
-/// matching bases once per fragment and preserve ambiguous placements.
-fn validate(
+/// Per-base support from full-query gapped placements of every pair, in both
+/// orientations: quality-filtered matching bases, counted once per fragment.
+/// A read with a second placement within 5 log units adds no depth.
+struct ReadSupport {
+    depth: Vec<u32>,
+    observed_depth: Vec<u32>,
+    deletion_depth: Vec<u32>,
+    fragments: usize,
+    junction_fragments: u64,
+    exact_reads: u64,
+    repeated_names: u64,
+    aligned_reads: usize,
+    ambiguous_reads: usize,
+    alignment_limited_reads: usize,
+    anchor: usize,
+    /// `None` when the scan stopped at `--max-validation-pairs`: the counts
+    /// above are then incomplete and must not be read as support.
+    scan: Option<fastq::Scan>,
+}
+
+fn read_support(
     reads: &Reads,
     sequence: &[u8],
-    supported_graph_closure: bool,
-    out: &Path,
+    circular: bool,
     settings: &GraphSettings,
     limits: &Limits,
-) -> Result<(Value, bool)> {
+) -> Result<ReadSupport> {
     let n = sequence.len();
-    let aligner = align::Index::new(sequence, true, sequence.len());
+    let aligner = align::Index::new(sequence, circular, sequence.len());
     let mut depth = vec![0u32; n];
     let mut names = HashSet::new();
     let (mut junction_fragments, mut exact_reads, mut repeated_names) = (0u64, 0u64, 0u64);
@@ -795,6 +812,7 @@ fn validate(
     let mut observed_depth = vec![0u32; n];
     let mut deletion_depth = vec![0u32; n];
     let anchor = settings.k.min(20);
+    let mut limited = false;
     let scan = fastq::scan_pairs(&reads.r1, &reads.r2, |_, a, b| {
         let name = a.name(1)?;
         if names.contains(name) {
@@ -827,6 +845,7 @@ fn validate(
                 continue;
             }
             let trace = align::trace_alignment(read, hit, &aligner.sequence, limits.min_baseq);
+            // Only a circular index holds bases past the origin.
             junction |= n - hit.start >= anchor
                 && hit.end >= n + anchor
                 && trace.matches_contiguous(n - anchor, n + anchor);
@@ -838,10 +857,10 @@ fn validate(
             aligned_reads += 1;
         }
         if matches > 0 {
-            ensure!(
-                names.len() < settings.max_validation_pairs,
-                "validation exceeds --max-validation-pairs; no final assembly published"
-            );
+            if names.len() >= settings.max_validation_pairs {
+                limited = true;
+                anyhow::bail!("validation exceeds --max-validation-pairs");
+            }
             names.insert(name.to_owned());
             covered.sort_unstable();
             covered.dedup();
@@ -861,22 +880,147 @@ fn validate(
             junction_fragments += u64::from(junction);
         }
         Ok(())
-    })?;
-    let minimum = *depth.iter().min().unwrap_or(&0);
-    let low_depth = depth.iter().filter(|d| **d < settings.min_depth).count();
-    let mut writer = BufWriter::new(File::create(out.join("coverage.tsv"))?);
+    });
+    let scan = match scan {
+        Ok(scan) => Some(scan),
+        Err(_) if limited => None,
+        Err(error) => return Err(error),
+    };
+    Ok(ReadSupport {
+        depth,
+        observed_depth,
+        deletion_depth,
+        fragments: names.len(),
+        junction_fragments,
+        exact_reads,
+        repeated_names,
+        aligned_reads,
+        ambiguous_reads,
+        alignment_limited_reads,
+        anchor,
+        scan,
+    })
+}
+
+const VALIDATION_METHOD: &str = "unique full-query affine-gap placement; quality-filtered matching bases only; mates collapsed per position";
+
+fn write_coverage(path: &Path, depth: &[u32]) -> Result<()> {
+    let mut writer = BufWriter::new(File::create(path)?);
     writeln!(writer, "pos\tdepth\tmethod")?;
     for (i, d) in depth.iter().enumerate() {
         writeln!(writer, "{}\t{}\tgapped_matching_fragment", i + 1, d)?;
     }
     writer.flush()?;
+    Ok(())
+}
+
+/// The strict check of the one selected circle: every base at `--min-depth`
+/// and a read-supported closure. Exceeding the pair limit fails the run.
+fn validate(
+    reads: &Reads,
+    sequence: &[u8],
+    supported_graph_closure: bool,
+    out: &Path,
+    settings: &GraphSettings,
+    limits: &Limits,
+) -> Result<(Value, bool, ReadSupport)> {
+    let support = read_support(reads, sequence, true, settings, limits)?;
+    let Some(scan) = &support.scan else {
+        anyhow::bail!("validation exceeds --max-validation-pairs; no final assembly published");
+    };
+    let minimum = *support.depth.iter().min().unwrap_or(&0);
+    let low_depth = support
+        .depth
+        .iter()
+        .filter(|d| **d < settings.min_depth)
+        .count();
+    write_coverage(&out.join("coverage.tsv"), &support.depth)?;
     let complete = low_depth == 0
         && (supported_graph_closure
-            || junction_fragments >= u64::from(settings.min_junction_fragments));
-    Ok((
-        json!({"method":"unique full-query affine-gap placement; quality-filtered matching bases only; mates collapsed per position","aligned_reads":aligned_reads,"ambiguous_placement_reads":ambiguous_reads,"alignment_limited_reads":alignment_limited_reads,"minimum_observed_base_depth":observed_depth.iter().min(),"positions_with_deletion_support":deletion_depth.iter().filter(|&&n|n>0).count(), "input_r1":reads.r1.canonicalize()?,"input_r2":reads.r2.canonicalize()?,"scan":scan,"exact_reads":exact_reads,"unique_fragments":names.len(),"repeated_names_ignored":repeated_names,"minimum_depth":minimum,"low_depth_bases":low_depth,"literal_junction_fragments":junction_fragments,"read_supported_graph_closure":supported_graph_closure,"closure_basis":if supported_graph_closure{"read-supported graph joins before output rotation"}else{"literal output-origin read bridge"},"junction_anchor_bases":anchor,"passed":complete}),
-        complete,
-    ))
+            || support.junction_fragments >= u64::from(settings.min_junction_fragments));
+    let report = json!({"method":VALIDATION_METHOD,"aligned_reads":support.aligned_reads,"ambiguous_placement_reads":support.ambiguous_reads,"alignment_limited_reads":support.alignment_limited_reads,"minimum_observed_base_depth":support.observed_depth.iter().min(),"positions_with_deletion_support":support.deletion_depth.iter().filter(|&&n|n>0).count(), "input_r1":reads.r1.canonicalize()?,"input_r2":reads.r2.canonicalize()?,"scan":scan,"exact_reads":support.exact_reads,"unique_fragments":support.fragments,"repeated_names_ignored":support.repeated_names,"minimum_depth":minimum,"low_depth_bases":low_depth,"literal_junction_fragments":support.junction_fragments,"read_supported_graph_closure":supported_graph_closure,"closure_basis":if supported_graph_closure{"read-supported graph joins before output rotation"}else{"literal output-origin read bridge"},"junction_anchor_bases":support.anchor,"passed":complete});
+    Ok((report, complete, support))
+}
+
+/// The same per-base check on the selected primary, linear or circular. It
+/// grants nothing: bases below `--min-depth` become local intervals, and a
+/// linear sequence is never tested for closure here. The depth of the already
+/// validated circle is reused when the primary is that circle. Exceeding the
+/// pair limit leaves the primary unvalidated and says so; it does not fail.
+fn validate_primary(
+    reads: &Reads,
+    candidate: &Candidate,
+    validated: Option<&ReadSupport>,
+    out: &Path,
+    settings: &GraphSettings,
+    limits: &Limits,
+) -> Result<paths::primary::PrimaryValidation> {
+    let computed;
+    let (support, file) = match validated {
+        Some(support) => (support, "coverage.tsv"),
+        None => {
+            computed = read_support(
+                reads,
+                &candidate.sequence,
+                candidate.circular,
+                settings,
+                limits,
+            )?;
+            (&computed, "primary_coverage.tsv")
+        }
+    };
+    let scope = "every base of primary.fasta at --min-depth; a read with two near-equal placements adds no depth, and a read that runs past a linear end is not placed, so depth falls towards open ends and inside exact repeats longer than a read";
+    let Some(scan) = &support.scan else {
+        return Ok((
+            Vec::new(),
+            json!({"status":"resource_limited","method":VALIDATION_METHOD,"scope":scope,
+                "resource_limit":{"limit":"--max-validation-pairs","max_validation_pairs":settings.max_validation_pairs,
+                    "observed":"more named fragments placed than the limit","action":"primary retained without read validation; no low-depth intervals reported"},
+                "minimum_depth_required":settings.min_depth,"topology":if candidate.circular {"circular"} else {"linear"},
+                "low_depth_bases":null,"low_depth_intervals":null,"coverage_file":null}),
+        ));
+    };
+    if validated.is_none() {
+        write_coverage(&out.join(file), &support.depth)?;
+    }
+    let mut intervals = Vec::<(usize, usize)>::new();
+    for (position, _) in support
+        .depth
+        .iter()
+        .enumerate()
+        .filter(|(_, depth)| **depth < settings.min_depth)
+    {
+        match intervals.last_mut() {
+            Some(last) if last.1 == position => last.1 += 1,
+            _ => intervals.push((position, position + 1)),
+        }
+    }
+    let regions = intervals
+        .iter()
+        .enumerate()
+        .map(|(i, &(start, end))| paths::primary::Region {
+            start,
+            end,
+            evidence: format!("read_validation_{}", i + 1),
+            reason: "low_matching_read_depth",
+            alternatives: 0,
+        })
+        .collect();
+    let report = json!({"status":"performed","method":VALIDATION_METHOD,"scope":scope,
+        "topology":if candidate.circular {"circular"} else {"linear"},
+        "minimum_depth_required":settings.min_depth,
+        "minimum_depth":support.depth.iter().min(),
+        "low_depth_bases":intervals.iter().map(|(start, end)| end - start).sum::<usize>(),
+        "low_depth_intervals":intervals.iter().map(|&(start, end)| json!({"start":start+1,"end":end})).collect::<Vec<_>>(),
+        "interval_reason":"low_matching_read_depth",
+        "aligned_reads":support.aligned_reads,"ambiguous_placement_reads":support.ambiguous_reads,
+        "alignment_limited_reads":support.alignment_limited_reads,"unique_fragments":support.fragments,
+        "repeated_names_ignored":support.repeated_names,"scan":scan,
+        "input_r1":reads.r1.canonicalize()?,"input_r2":reads.r2.canonicalize()?,
+        "coverage_file":file,
+        "closure_tested":false,
+        "claim":"per-base read support of the frozen primary; not a test of closure, repeat copy number or structure"});
+    Ok((regions, report))
 }
 
 /// Count each canonical k-mer once per complete pair. `None` means the distinct
@@ -1102,28 +1246,39 @@ pub fn assemble(
     for primary in &mut path_resolution.primary_candidates {
         primary.regions.extend(families.regions(&primary.candidate));
         // A homopolymer tract still vetoes final publication, but its primary
-        // interval is local; other permissive bubbles flag their component.
-        let affected: Vec<_> = bubble_components
-            .affected(&primary.candidate, settings.k)
-            .into_iter()
-            .filter(|&b| !collapsed_bubbles[b - 1].homopolymer_tract())
-            .collect();
-        if !affected.is_empty() {
-            primary.regions.push(paths::primary::Region {
-                start: 0,
-                end: primary.candidate.sequence.len(),
-                evidence: format!(
-                    "collapsed_bubbles_{}",
-                    affected
-                        .iter()
-                        .map(usize::to_string)
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ),
-                reason: "collapsed_bubble_component_unresolved",
-                alternatives: affected.len(),
-            });
+        // interval is local. Every other permissive bubble of the component is
+        // marked where this sequence carries it; a bubble that cannot be
+        // placed here is listed and marks nothing.
+        let (mut placed, mut core_anchored, mut unplaced) = (Vec::new(), Vec::new(), Vec::new());
+        for b in bubble_components.affected(&primary.candidate, settings.k) {
+            let bubble = &collapsed_bubbles[b - 1];
+            if bubble.homopolymer_tract() {
+                continue;
+            }
+            let (intervals, placement) = bubble.place(&primary.candidate, settings.k);
+            match placement {
+                bubbles::Placement::NotPlaced => unplaced.push(b),
+                bubbles::Placement::CoreAnchors => {
+                    placed.push(b);
+                    core_anchored.push(b);
+                }
+                bubbles::Placement::Flanks => placed.push(b),
+            }
+            for (start, end) in intervals {
+                primary.regions.push(paths::primary::Region {
+                    start,
+                    end,
+                    evidence: format!("collapsed_bubble_{b}"),
+                    reason: "collapsed_bubble_alternative",
+                    alternatives: 1,
+                });
+            }
         }
+        primary.details.insert(
+            "collapsed_bubbles".into(),
+            json!({"local_intervals":placed,"placed_by_core_anchors":core_anchored,"not_placed":unplaced,
+                "rule":"bubbles of this sequence's raw graph component, homopolymer tracts aside; an interval marks the bases where the sequence differs from the other side, found by both whole k-1 junction flanks or, when a base further out was changed by later cleanup and both sides are at least 2(k-1) long, by the 31 flank bases next to the differing bases; a bubble not placed marks nothing; final publication still counts every bubble of the component"}),
+        );
     }
     let candidates = path_resolution.candidates;
     let records: Vec<_> = candidates
@@ -1174,8 +1329,8 @@ pub fn assemble(
     let selected_bubbles = selected
         .map(|c| bubble_components.affected(c, settings.k))
         .unwrap_or_default();
-    let (mut validation, read_validated) = if let Some(candidate) = selected {
-        validate(
+    let (mut validation, read_validated, selected_support) = if let Some(candidate) = selected {
+        let (report, passed, support) = validate(
             validation_reads,
             &candidate.sequence,
             path_resolution
@@ -1184,9 +1339,10 @@ pub fn assemble(
             out,
             settings,
             limits,
-        )?
+        )?;
+        (report, passed, Some(support))
     } else {
-        (Value::Null, false)
+        (Value::Null, false, None)
     };
     let end_search_limited = path_resolution.report["end_assembly"]["status"] == "resource_limited";
     let complete = read_validated && selected_bubbles.is_empty() && !end_search_limited;
@@ -1196,12 +1352,28 @@ pub fn assemble(
             json!(selected_bubbles),
         );
     }
+    let mut primary_validation = |candidate: &Candidate| {
+        let validated = selected_support.as_ref().filter(|_| {
+            selected.is_some_and(|c| {
+                c.circular == candidate.circular && c.sequence == candidate.sequence
+            })
+        });
+        validate_primary(
+            validation_reads,
+            candidate,
+            validated,
+            out,
+            settings,
+            limits,
+        )
+    };
     let (primary, best_circular) = paths::primary::write_outputs(
         path_resolution.primary_candidates,
         &counts,
         settings.k,
         out,
         selected.filter(|_| complete),
+        &mut primary_validation,
     )?;
     let coverage_layout = if settings.coverage_layout && !primary.is_null() {
         let backbone = crate::io::fasta::load_reference(&out.join("primary.fasta"), None)?;
@@ -1375,6 +1547,117 @@ mod tests {
         }
         // Both outcomes are exercised near the edit bound.
         assert!(accepted > 1000 && rejected > 1000);
+    }
+
+    /// Paired reads of fragments of 170 bases from every start of `genome`.
+    fn write_pairs(dir: &Path, genome: &[u8]) -> Reads {
+        let reads = Reads {
+            r1: dir.join("r1.fq"),
+            r2: dir.join("r2.fq"),
+        };
+        let (mut r1, mut r2) = (String::new(), String::new());
+        for start in 0..=genome.len() - 170 {
+            let a = &genome[start..start + 100];
+            let b = kmer::reverse_complement(&genome[start + 70..start + 170]);
+            for (text, mate, read) in [(&mut r1, 1, a), (&mut r2, 2, b.as_slice())] {
+                text.push_str(&format!(
+                    "@f{start}/{mate}\n{}\n+\n{}\n",
+                    String::from_utf8_lossy(read),
+                    "I".repeat(read.len())
+                ));
+            }
+        }
+        std::fs::write(&reads.r1, r1).unwrap();
+        std::fs::write(&reads.r2, r2).unwrap();
+        reads
+    }
+
+    fn validation_settings(max_validation_pairs: usize) -> GraphSettings {
+        GraphSettings {
+            coverage_layout: false,
+            multi_k_layout: false,
+            k: 31,
+            min_kmer_count: 3,
+            max_error_fraction: 0.2,
+            max_bubble_fraction: 0.49,
+            min_depth: 10,
+            min_junction_fragments: 3,
+            max_validation_pairs,
+        }
+    }
+
+    #[test]
+    fn primary_validation_over_the_pair_limit_is_reported_not_fatal() {
+        let dir =
+            std::env::temp_dir().join(format!("mitovar-primary-limit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut state = 0x9e3779b97f4a7c15u64;
+        let genome: Vec<u8> = (0..600)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                b"ACGT"[(state >> 32) as usize & 3]
+            })
+            .collect();
+        let reads = write_pairs(&dir, &genome);
+        let candidate = Candidate {
+            sequence: genome.clone(),
+            circular: false,
+        };
+        let limits = Limits {
+            max_kmers: 100_000,
+            min_baseq: 0,
+        };
+        // Within the limit: per-base depth, low only towards the two ends.
+        let (regions, report) = validate_primary(
+            &reads,
+            &candidate,
+            None,
+            &dir,
+            &validation_settings(10_000),
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(report["status"], "performed");
+        assert_eq!(report["unique_fragments"], 431);
+        assert_eq!(report["coverage_file"], "primary_coverage.tsv");
+        assert_eq!(regions.len(), 2, "{report:#}");
+        assert_eq!(regions[0].start, 0);
+        assert_eq!(regions[1].end, genome.len());
+        assert!(regions
+            .iter()
+            .all(|r| r.reason == "low_matching_read_depth"));
+        // Over the limit: reported, no intervals, no coverage file, no error.
+        std::fs::remove_file(dir.join("primary_coverage.tsv")).unwrap();
+        let (regions, report) = validate_primary(
+            &reads,
+            &candidate,
+            None,
+            &dir,
+            &validation_settings(100),
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(report["status"], "resource_limited", "{report:#}");
+        assert_eq!(report["resource_limit"]["max_validation_pairs"], 100);
+        assert!(report["low_depth_intervals"].is_null());
+        assert!(report["coverage_file"].is_null());
+        assert!(regions.is_empty());
+        assert!(!dir.join("primary_coverage.tsv").exists());
+        // The strict validation of a selected circle still fails at the limit.
+        let error = validate(
+            &reads,
+            &genome,
+            false,
+            &dir,
+            &validation_settings(100),
+            &limits,
+        )
+        .err()
+        .expect("strict validation fails over the limit");
+        assert!(error.to_string().contains("--max-validation-pairs"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
 
